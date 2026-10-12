@@ -29,8 +29,8 @@ team workload**. Budgets are UTF-8 bytes, not a guessed byte-to-token ratio.
 ## Event coalescing
 
 `tests/extension.test.ts` ingests **100 messages**, 90 ordinary progress notices
-and 10 actionable result notices. It records **one** Pi `sendMessage` call with
-`deliverAs: "followUp"`, `triggerTurn: true`; progress causes zero additional model
+and 10 actionable result notices. It records **one** Pi `sendUserMessage` call with
+`deliverAs: "followUp"` (which starts an idle run or queues behind a busy run); progress causes zero additional model
 wake-ups. The wake references work IDs and fixed posts, never the private bodies.
 
 `tests/transport.test.ts` disconnects a synthetic listener after its initial
