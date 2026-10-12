@@ -55,7 +55,10 @@ export default function piMsg(pi: ExtensionAPI): void {
     return store;
   }
   function load(): void {
-    const path = existsSync(configPath) ? configPath : join(ctx?.cwd ?? process.cwd(), '.pi', 'msg.json');
+    // A global install is shared by unrelated Pi processes. Explicit private
+    // project bindings must override the fallback, never share its live cursor.
+    const projectPath = join(ctx?.cwd ?? process.cwd(), '.pi', 'msg.json');
+    const path = existsSync(projectPath) ? projectPath : configPath;
     if (!existsSync(path)) { config = undefined; enabled = false; return; }
     checkFile(path);
     const input = JSON.parse(readFileSync(path, 'utf8'));

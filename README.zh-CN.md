@@ -12,7 +12,13 @@
 pi install git:github.com/TokenNotIncluded/pi-msg
 ```
 
-在 `~/.config/pi-msg/config.json` 配置**已有**账号、服务、邮箱标签和独立订阅 ID：
+在项目 `.pi/msg.json` 配置**已有**账号、服务、邮箱标签和独立订阅 ID。
+项目配置优先于 `~/.config/pi-msg/config.json`。全局安装供多个 Pi 进程共用，
+不要让它们自动连接同一个固定 reader；全局 fallback 建议 `enabled: false`，
+各项目分别启用并使用独立 mailbox／订阅。同一项目内的并行消费者也需要显式
+区分 reader。已有 owner 活着时不能删除锁来抢占游标。
+
+配置示例：
 
 ```json
 {

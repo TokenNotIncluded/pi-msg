@@ -8,11 +8,16 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import piMsg from '../extensions/index.js';
 import { Dashboard } from '../src/dashboard.js';
 
-test('100 messages coalesce into one ref-only follow-up; progress stays out of model', async t => {
+test('project subscription overrides global fallback; 100 messages coalesce into one ref-only follow-up', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-msg-extension-')); const previousHome = process.env.HOME; const previousState = process.env.XDG_STATE_HOME;
   process.env.HOME = dir; process.env.XDG_STATE_HOME = join(dir, 'state');
   t.after(() => { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; if (previousState === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = previousState; rmSync(dir, { recursive: true, force: true }); });
   mkdirSync(join(dir, '.pi'), { mode: 0o700 });
+  mkdirSync(join(dir, '.config/pi-msg'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, '.config/pi-msg/config.json'), JSON.stringify({
+    enabled: false, executable: '/must-not-execute-global-cli', remote: false,
+    configDir: join(dir, 'global-cli'), username: 'tester', agent: 'global', subscription: 'shared-global',
+  }), { mode: 0o600 });
   const executable = join(dir, 'msg');
   writeFileSync(executable, `#!/usr/bin/env node
 const fs=require('fs');const a=process.argv;

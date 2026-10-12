@@ -46,8 +46,8 @@ Run `git submodule update --init integrations/pi-msg` after cloning that reposit
 
 ## Configure explicitly
 
-Create `~/.config/pi-msg/config.json` (or project `.pi/msg.json` if no global
-configuration exists). Its contents and state must be owner-only: directory `0700`,
+Create project `.pi/msg.json` for each workspace (it overrides the global
+`~/.config/pi-msg/config.json` fallback). Its contents and state must be owner-only: directory `0700`,
 file `0600`. Symlink state paths are rejected. No credentials belong in this file.
 
 ```json
@@ -73,7 +73,10 @@ chmod 600 ~/.config/pi-msg/config.json
 Use an **existing configured signed account** and authorized existing mailbox.
 Create mailbox labels explicitly with MSG CLI if needed. Every live consumer
 needs its own subscription ID; a process lock prevents two Pi processes sharing
-one journal. An active account/server is pinned: changing CLI defaults cannot
+one journal. Do not enable one fixed global reader for every workspace: keep the
+global fallback `enabled: false`, then enable private project configurations with
+distinct mailbox/subscription bindings. For two live consumers in the same workspace,
+configure distinct readers explicitly; the lock must not be deleted while its owner lives. An active account/server is pinned: changing CLI defaults cannot
 silently move a remote subscription to another identity or deployment.
 
 For explicitly chosen offline mode, use a separate local directory and username:
