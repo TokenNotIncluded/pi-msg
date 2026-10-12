@@ -1,0 +1,15 @@
+{
+  "name": "pi-msg",
+  "version": "0.1.0",
+  "description": "Event-driven MSG collaboration, durable wake-ups and channel history for Pi",
+  "type": "module",
+  "license": "MIT",
+  "repository": "https://github.com/TokenNotIncluded/pi-msg",
+  "engines": { "node": ">=22.19" },
+  "keywords": ["pi-package", "pi", "msg", "agents", "events"],
+  "pi": { "extensions": ["./extensions/index.ts"], "skills": ["./skills"] },
+  "files": ["extensions", "src", "skills", "README.md", "LICENSE"],
+  "scripts": { "test": "tsx --test tests/*.test.ts", "typecheck": "tsc --noEmit" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "^1.1.0", "@earendil-works/pi-tui": "^1.1.0", "@sinclair/typebox": "^0.34.0" },
+  "devDependencies": { "@earendil-works/pi-coding-agent": "1.1.0", "@earendil-works/pi-tui": "1.1.0", "@sinclair/typebox": "^0.34.0", "@types/node": "^22.0.0", "tsx": "^4.20.0", "typescript": "^5.9.0" }
+}
