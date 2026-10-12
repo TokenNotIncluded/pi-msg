@@ -157,9 +157,12 @@ need corresponding MSG protocol support; this package does not pretend otherwise
 A crash immediately after an external side effect and before `complete` can replay
 work: handlers must use their own idempotency key and verify the outcome before retry.
 
-A new reader initializes the listener at the live tail, then reconciles its mailbox.
-Its first inbox reconciliation reads existing mailbox work once; subsequent reads
-resume the durable opaque inbox cursor. The CLI currently implements `listen` with
+A new reader initializes its durable live inbox cursor using `agent inbox --tail`
+and starts listening without waiting for unrelated account history. An independent
+backfill cursor retains existing mailbox work; bounded history pages alternate with
+live reconciliation, with shared message-ID deduplication. Both cursors survive
+restart, and completion of the historical scan is persisted. Nothing resets or steals
+another consumer's cursor. The CLI currently implements `listen` with
 interval-based transport reads. **Pi/model delivery is event-driven**, but this does
 not claim that the remote network transport is push/WebSocket-based. Adding a native
 push transport later must retain reconciliation, independent cursors and authority.

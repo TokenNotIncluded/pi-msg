@@ -29,7 +29,7 @@ export interface Delivery {
   attempts: number; receivedAt: string; leaseUntil?: number; token?: string; error?: string;
 }
 export interface Journal {
-  version: 1; binding: string; cursor?: string; deliveries: Delivery[];
+  version: 1; binding: string; cursor?: string; liveCursor?: string; historyComplete?: boolean; deliveries: Delivery[];
 }
 export function clean(value: unknown, max = 160): string {
   return String(value ?? '').replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ').slice(0, max);
@@ -104,7 +104,7 @@ export class Store {
     if (this.journal.version !== 1 || this.journal.binding !== binding(config) || !Array.isArray(this.journal.deliveries) || this.journal.deliveries.some(d => !validMessage(d.message) || !['pending', 'claimed', 'completed'].includes(d.state))) throw new Error('Invalid subscription journal');
   }
   save(): void { atomicJSON(this.path, this.journal); }
-  ingest(items: unknown[], cursor: string): number {
+  ingest(items: unknown[], cursor: string, stream: 'history' | 'live' = 'history'): number {
     if (typeof cursor !== 'string' || !items.every(validMessage)) throw new Error('Invalid MSG inbox page');
     const seen = new Map(this.journal.deliveries.map(d => [d.message.id, d]));
     const added: Delivery[] = [];
@@ -120,7 +120,7 @@ export class Store {
     if (this.pending().length + added.length > this.config.maxPending) throw new Error('Pending quota reached; cursor not advanced. Complete work or increase configured quota.');
     const previous = this.journal;
     const completed = previous.deliveries.filter(d => d.state === 'completed').slice(-1000);
-    this.journal = { ...previous, cursor, deliveries: [...completed, ...previous.deliveries.filter(d => d.state !== 'completed'), ...added] };
+    this.journal = { ...previous, [stream === 'live' ? 'liveCursor' : 'cursor']: cursor, deliveries: [...completed, ...previous.deliveries.filter(d => d.state !== 'completed'), ...added] };
     try { this.save(); } catch (e) { this.journal = previous; throw e; }
     return added.length;
   }

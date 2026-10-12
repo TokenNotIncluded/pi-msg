@@ -21,7 +21,8 @@ test('project subscription overrides global fallback; 100 messages coalesce into
   const executable = join(dir, 'msg');
   writeFileSync(executable, `#!/usr/bin/env node
 const fs=require('fs');const a=process.argv;
-if(a.includes('inbox')) {const items=a.includes('--cursor')?[]:Array.from({length:100},(_,i)=>({id:'id'+i,from:'@test#worker'+i,to:'@test#main',message:JSON.stringify({kind:i<50?'result':'progress',summary:'PRIVATE-BODY-SENTINEL',ref:{id:'ref'+i,revision:'rev'},notification_only:true})}));console.log(JSON.stringify({status:'ok',data:{items,cursor:'c1',has_more:false}}));}
+if(a.includes('inbox') && a.includes('--tail')) console.log(JSON.stringify({status:'ok',data:{items:[],cursor:'live-tail',has_more:false}}));
+else if(a.includes('inbox')) {const items=a.includes('--cursor')?[]:Array.from({length:100},(_,i)=>({id:'id'+i,from:'@test#worker'+i,to:'@test#main',message:JSON.stringify({kind:i<50?'result':'progress',summary:'PRIVATE-BODY-SENTINEL',ref:{id:'ref'+i,revision:'rev'},notification_only:true})}));console.log(JSON.stringify({status:'ok',data:{items,cursor:'c1',has_more:false}}));}
 else if(a.includes('--once'))fs.writeFileSync(a[a.indexOf('--cursor-file')+1],'{}',{mode:0o600});
 else setInterval(()=>{},1000);
 `, { mode: 0o700 });

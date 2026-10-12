@@ -1,6 +1,6 @@
 {
   "name": "pi-msg",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Event-driven MSG collaboration, durable wake-ups and channel history for Pi",
   "type": "module",
   "license": "MIT",

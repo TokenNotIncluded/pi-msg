@@ -59,7 +59,14 @@ export class Subscription {
       // This closes the drain/spawn race without scanning listener history.
       checkFile(this.cursorFile);
       if (!existsSync(this.cursorFile)) await command(this.store.config, ['listen', ...(this.store.config.remote ? ['--remote'] : []), '--cursor-file', this.cursorFile, '--event', 'subagent.message', '--from-now', '--once', '--max-pages', '1'], this.abort.signal, true);
-      await this.drain();
+      // Independent live and backfill cursors: a large unrelated event history
+      // must not delay a fresh message or discard unfinished historical work.
+      if (!this.store.journal.liveCursor) {
+        const tail = await command(this.store.config, ['agent', 'inbox', ...(this.store.config.remote ? ['--remote'] : []), '--tail', '--limit', '1'], this.abort.signal) as Page;
+        if (!tail || !Array.isArray(tail.items) || tail.items.length || typeof tail.cursor !== 'string' || tail.has_more !== false) throw new Error('MSG CLI must support inbox --tail');
+        this.store.ingest([], tail.cursor, 'live');
+      }
+      void this.drain().catch(() => { this.lastError = 'Inbox reconciliation failed; durable cursors retained'; this.child?.kill('SIGTERM'); });
       this.scheduleLeases();
       this.loop = this.listen();
       if (this.store.pending().length) this.onDelivery();
@@ -74,14 +81,26 @@ export class Subscription {
         let hasMore: boolean;
         do {
           const config = this.store.config;
-          const value = await command(config, ['agent', 'inbox', ...(config.remote ? ['--remote'] : []), '--limit', '50', ...(this.store.journal.cursor ? ['--cursor', this.store.journal.cursor] : [])], this.abort.signal) as Page;
+          const value = await command(config, ['agent', 'inbox', ...(config.remote ? ['--remote'] : []), '--limit', '50', '--cursor', this.store.journal.liveCursor!], this.abort.signal) as Page;
           if (!value || !Array.isArray(value.items) || typeof value.cursor !== 'string' || typeof value.has_more !== 'boolean') throw new Error('MSG inbox page shape is not supported');
-          const previous = this.store.journal.cursor;
-          const count = this.store.ingest(value.items, value.cursor);
+          const previous = this.store.journal.liveCursor;
+          const count = this.store.ingest(value.items, value.cursor, 'live');
           if (count) { this.lastDelivery = new Date().toISOString(); this.onDelivery(); }
           hasMore = value.has_more;
           if (hasMore && value.cursor === previous) throw new Error('MSG inbox pagination did not advance');
         } while (hasMore && !this.abort.signal.aborted);
+        if (!this.store.journal.historyComplete && !this.abort.signal.aborted) {
+          const config = this.store.config;
+          const previous = this.store.journal.cursor;
+          const history = await command(config, ['agent', 'inbox', ...(config.remote ? ['--remote'] : []), '--limit', '50', ...(previous ? ['--cursor', previous] : [])], this.abort.signal) as Page;
+          if (!history || !Array.isArray(history.items) || typeof history.cursor !== 'string' || typeof history.has_more !== 'boolean') throw new Error('Unsupported history page');
+          if (history.has_more && history.cursor === previous) throw new Error('History cursor did not advance');
+          if (this.store.ingest(history.items, history.cursor)) { this.lastDelivery = new Date().toISOString(); this.onDelivery(); }
+          if (history.has_more) this.again = true;
+          else { this.store.journal.historyComplete = true; this.store.save(); }
+        }
+        // Recheck live work between bounded history pages; listener hints can
+        // still enqueue reconciliation while this serialized worker runs.
       } while (this.again && !this.abort.signal.aborted);
     } finally { this.draining = false; }
   }

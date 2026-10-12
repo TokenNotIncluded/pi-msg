@@ -31,7 +31,8 @@ test('send hides local repeated body and retains exact retry ID', async t => {
 });
 test('background subscription reconciles a lost hint on reconnect; stop cancels', async t => {
   const s = fake(t, `const fs=require('fs');const path=require('path');const args=process.argv;const root=path.dirname(args[1]);const marker=path.join(root,'disconnected');
-if(args.includes('inbox')){let items=fs.existsSync(marker)?[{id:'recovered',from:'@test#worker',to:'@test#main',message:'done'}]:[]; console.log(JSON.stringify({status:'ok',data:{items,cursor:items.length?'c2':'c1',has_more:false}}));}
+if(args.includes('inbox') && args.includes('--tail')) console.log(JSON.stringify({status:'ok',data:{items:[],cursor:'live-tail',has_more:false}}));
+else if(args.includes('inbox')){let items=fs.existsSync(marker)?[{id:'recovered',from:'@test#worker',to:'@test#main',message:'done'}]:[]; console.log(JSON.stringify({status:'ok',data:{items,cursor:items.length?'c2':'c1',has_more:false}}));}
 else if(args.includes('--once')){fs.writeFileSync(args[args.indexOf('--cursor-file')+1],'{}',{mode:0o600});}
 else {if(!fs.existsSync(marker)){fs.writeFileSync(marker,'1');process.exit(1);}else setInterval(()=>{},1000);}`);
   let notified = 0; const sub = new Subscription(s, () => notified++); t.after(async () => sub.stop());
@@ -39,6 +40,27 @@ else {if(!fs.existsSync(marker)){fs.writeFileSync(marker,'1');process.exit(1);}e
   for (let i = 0; i < 100 && !s.pending().length; i++) await sleep(30);
   assert.equal(s.pending()[0]?.message.id, 'recovered'); assert.ok(notified > 0);
   await sub.stop(); assert.equal(sub.state, 'stopped');
+});
+test('live delivery does not wait for unrelated historical backfill', async t => {
+  const s = fake(t, `const fs=require('fs');const path=require('path');const a=process.argv;const marker=path.join(path.dirname(a[1]),'arrival');
+if(a.includes('inbox')) {
+ const cursor=a.includes('--cursor')?a[a.indexOf('--cursor')+1]:'';
+ let items=[],next='live0',more=false;
+ if(!a.includes('--tail') && cursor.startsWith('live')) {if(fs.existsSync(marker) && cursor==='live0') items=[{id:'urgent',from:'@test#worker',to:'@test#main',message:'blocker'}];next=items.length?'live1':cursor;}
+ else if(!a.includes('--tail')) {next='history'+(Number(cursor.replace('history',''))+1);more=true;}
+ console.log(JSON.stringify({status:'ok',data:{items,cursor:next,has_more:more}}));
+} else if(a.includes('--once')) fs.writeFileSync(a[a.indexOf('--cursor-file')+1],'{}',{mode:0o600});
+else {setTimeout(()=>{fs.writeFileSync(marker,'1');process.stdout.write('hint\\n');},20);setInterval(()=>{},1000);}`);
+  const sub = new Subscription(s, () => {});
+  try {
+    await sub.start();
+    for (let i=0;i<100 && !s.pending().length;i++) await sleep(20);
+    assert.equal(s.pending()[0]?.message.id, 'urgent');
+    assert.equal(s.journal.historyComplete, undefined);
+    assert.match(s.journal.cursor!, /^history/);
+    assert.equal(s.journal.liveCursor, 'live1');
+    assert.equal(sub.state, 'live');
+  } finally { await sub.stop(); }
 });
 test('listener byte bursts are hints, never arbitrary prompt bodies', async t => {
   const s = fake(t, `const fs=require('fs'); const a=process.argv;

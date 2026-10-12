@@ -15,6 +15,17 @@ test('journal saves cursor with pending delivery and deduplicates retries', t =>
   assert.equal(s.ingest([message('one')], 'cursor-2'), 0);
   const restored = new Store(s.config, s.directory); assert.equal(restored.journal.cursor, 'cursor-2'); assert.equal(restored.pending().length, 1);
 });
+test('live and history cursors persist independently and share ID deduplication', t => {
+  const s = fixture(t); s.ingest([message('one')], 'live-1', 'live');
+  assert.equal(s.ingest([message('one'), message('two')], 'history-1'), 1);
+  assert.throws(() => s.ingest([message('one', 'conflict')], 'live-2', 'live'), /conflict/);
+  s.journal.historyComplete = true; s.save();
+  const restored = new Store(s.config, s.directory);
+  assert.equal(restored.journal.cursor, 'history-1');
+  assert.equal(restored.journal.liveCursor, 'live-1');
+  assert.equal(restored.journal.historyComplete, true);
+  assert.equal(restored.pending().length, 2);
+});
 test('ID conflicts fail closed without advancing cursor', t => {
   const s = fixture(t); s.ingest([message('one')], 'c1'); assert.throws(() => s.ingest([message('one', 'changed')], 'c2'), /conflict/); assert.equal(s.journal.cursor, 'c1');
 });

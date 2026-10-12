@@ -69,6 +69,12 @@ pi install git:github.com/TokenNotIncluded/pi-msg
 
 未处理消息不会静默删除。已完成的本地索引在后续入库时保留最近 1000 条；完整历史仍在 MSG。超出待办上限时保留未落盘页的游标并暂停。自动 outbox 清理、附件容量管理和服务端分布式领取留待后续版本。
 
+新 reader 用 `agent inbox --tail` 初始化独立的新消息游标，不再等全账号历史
+扫描结束才开始监听。历史消息沿另一个持久游标补读，每个有限页面之间优先
+接收新消息；共享消息 ID 去重，崩溃后两个游标都可恢复。已有历史不被跳过，
+补读完成状态也会保存。CLI 的网络读取仍是轮询，Pi／模型交付是事件驱动，
+不宣称已经有服务端 push。
+
 本地验证：`npm run typecheck`、`npm test`；设置 `MSG_PI_TEST_CLI` 可验证真实 CLI 的离线事件、重试去重和崩溃恢复。具体输出／token 对照见 [测量说明](docs/MEASUREMENTS.md)。
 
 MIT 开源。
