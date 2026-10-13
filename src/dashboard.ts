@@ -32,6 +32,14 @@ export function queueItems(deliveries: Delivery[], history = false): Delivery[] 
       return time(b.delivery) - time(a.delivery) || b.index - a.index;
     }).map(({ delivery }) => delivery);
 }
+/** Chat order follows durable local arrival, not an untrusted sender clock. */
+export function conversationItems(deliveries: Delivery[]): Delivery[] {
+  return deliveries.map((delivery, index) => ({ delivery, index }))
+    .sort((a, b) => {
+      const time = (d: Delivery) => Date.parse(d.receivedAt) || Date.parse(d.message.created_at ?? '') || 0;
+      return time(a.delivery) - time(b.delivery) || a.index - b.index;
+    }).map(({ delivery }) => delivery);
+}
 /** Sender left, recipient right, summary in the middle; routing labels are not identities. */
 export function queueRow(d: Delivery, width: number, selected = false, labels?: ReadonlyMap<string, string>, presentation: QueuePresentation = {}): string {
   if (width < 1) return '';
@@ -83,10 +91,11 @@ export function nextHint(d: Delivery): string {
 }
 export function queueLines(deliveries: Delivery[], state: string, width: number, labels?: ReadonlyMap<string, string>, presentation: QueuePresentation = {}, budget = 8): string[] {
   if (width < 1) return [];
-  const items = queueItems(deliveries, !presentation.tasks).filter(d => !presentation.transportOnly || communicationPending(d));
+  const items = (presentation.tasks ? queueItems(deliveries) : conversationItems(deliveries)).filter(d => !presentation.transportOnly || communicationPending(d));
   const claimed = items.filter(d => !d.outbound && d.state === 'claimed').length;
   const deferred = items.filter(d => !d.outbound && d.deferred).length;
-  const rows = boundedRows(items, width, Math.max(0, budget - 1), undefined, labels, presentation);
+  const tail = presentation.tasks ? items : items.slice(-Math.min(2, Math.max(0, budget - 1)));
+  const rows = boundedRows(tail, width, Math.max(0, budget - 1), !presentation.tasks && tail.length ? viewKey(tail[tail.length - 1]!) : undefined, labels, presentation, items.length);
   const simple = rows.every(row => row.includes(' → '));
   const summary = presentation.tasks ? `${items.length} task pending · ${claimed} claimed${deferred ? ` · ${deferred} deferred` : ''}` : `${items.length} conversation records · ${items.filter(communicationPending).length} send pending`;
   return [`MSG ${transportMarker(presentation.remote)} ${clean(state, 24)} · ${summary} · /msg history /msg tasks`, ...(simple ? rows.slice(0, 2) : rows)]
@@ -99,10 +108,20 @@ export class InlineQueue {
   history = true;
   transportOnly = false;
   private selectedId?: string;
-  reset(): void { this.expanded = false; this.history = true; this.transportOnly = false; this.selectedId = undefined; }
+  private following = true;
+  private known?: Set<string>;
+  private newCount = 0;
+  reset(): void { this.expanded = false; this.history = true; this.transportOnly = false; this.selectedId = undefined; this.following = true; this.known = undefined; this.newCount = 0; }
   private items(deliveries: Delivery[]): Delivery[] {
-    const items = queueItems(deliveries, this.history).filter(d => !this.transportOnly || communicationPending(d));
-    if (!items.some(d => viewKey(d) === this.selectedId)) this.selectedId = items[0] ? viewKey(items[0]) : undefined;
+    const items = (this.history ? conversationItems(deliveries) : queueItems(deliveries)).filter(d => !this.transportOnly || communicationPending(d));
+    if (this.history && !this.transportOnly) {
+      const keys = new Set(items.map(viewKey));
+      if (this.known && this.expanded && !this.following) this.newCount += [...keys].filter(key => !this.known!.has(key)).length;
+      this.known = keys;
+      if (!this.expanded) this.following = true;
+      if (this.following) { this.selectedId = items.length ? viewKey(items[items.length - 1]!) : undefined; this.newCount = 0; }
+    }
+    if (!items.some(d => viewKey(d) === this.selectedId)) this.selectedId = items.length ? viewKey(items[this.history ? items.length - 1 : 0]!) : undefined;
     return items;
   }
   selected(deliveries: Delivery[]): Delivery | undefined {
@@ -113,17 +132,19 @@ export class InlineQueue {
     const index = Math.max(0, items.findIndex(d => viewKey(d) === this.selectedId));
     const next = items[Math.max(0, Math.min(items.length - 1, index + delta))];
     this.selectedId = next ? viewKey(next) : undefined;
+    if (this.history && !this.transportOnly) { this.following = !!next && next === items[items.length - 1]; if (this.following) this.newCount = 0; }
   }
   render(view: QueueView, width: number, availableRows = 24): string[] {
     const presentation = { ...view, tasks: !this.history, transportOnly: this.transportOnly };
+    const items = this.items(view.deliveries);
     if (!this.expanded) return queueLines(view.deliveries, view.listener, width, view.labels, presentation, Math.max(1, Math.min(8, Math.floor(availableRows / 3))))
       .slice(0, Math.max(1, Math.min(8, Math.floor(availableRows / 3))));
     if (width < 1) return [];
     // Reserve most terminal rows for the transcript/editor, even after expansion.
     const height = Math.max(1, Math.min(8, Math.floor(availableRows / 3)));
-    const items = this.items(view.deliveries);
     const title = `MSG ${transportMarker(view.remote)} ${clean(view.listener, 24)} · ${this.history ? this.transportOnly ? 'send pending' : 'conversation records' : 'task queue'} (${items.length}) · ${this.history ? items.filter(communicationPending).length + ' send pending' : items.filter(d => d.state === 'claimed').length + ' claimed · ' + items.filter(d => d.deferred).length + ' deferred'}`;
-    const rows = [view.error ? `${title} · ${clean(view.error, 120)}` : title];
+    const heading = this.newCount ? `${title} · ${this.newCount} new · /msg down to latest` : title;
+    const rows = [view.error ? `${heading} · ${clean(view.error, 120)}` : heading];
     if (height > 2) {
       const slots = height - 2;
       const index = Math.max(0, items.findIndex(d => viewKey(d) === this.selectedId));
@@ -150,8 +171,8 @@ export class Dashboard {
   invalidate(): void {}
   dispose(): void { this.closed = true; }
   private items(): Delivery[] {
-    const items = queueItems(this.view().deliveries, this.history);
-    if (!items.some(d => viewKey(d) === this.selectedId)) this.selectedId = items[0] ? viewKey(items[0]) : undefined;
+    const items = this.history ? conversationItems(this.view().deliveries) : queueItems(this.view().deliveries);
+    if (!items.some(d => viewKey(d) === this.selectedId)) this.selectedId = items.length ? viewKey(items[this.history ? items.length - 1 : 0]!) : undefined;
     if (this.expandedId && !items.some(d => viewKey(d) === this.expandedId)) { this.expandedId = undefined; this.scroll = 0; }
     return items;
   }

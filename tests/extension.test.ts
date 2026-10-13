@@ -23,9 +23,9 @@ for (const candidateMode of ['manual', 'followUp'] as const) test(`project bindi
 const fs=require('fs');const a=process.argv;
 if(a.includes('send')) { fs.appendFileSync(${JSON.stringify(join(dir, 'send-count'))},'call\\n'); if(fs.existsSync(${JSON.stringify(join(dir, 'send-fail'))})) process.exit(1); console.log(JSON.stringify({status:'ok',data:{from:'@test#main'}})); }
 else if(a.includes('inbox') && a.includes('--tail')) console.log(JSON.stringify({status:'ok',data:{items:[],cursor:'live-tail',has_more:false}}));
-else if(a.includes('inbox')) {const items=a.includes('--cursor')?[]:Array.from({length:100},(_,i)=>({id:'id'+i,from:'@test#worker'+i,to:'@test#main',message:JSON.stringify({kind:i<50?'result':'progress',summary:'PRIVATE-BODY-SENTINEL',ref:{id:'ref'+i,revision:'rev'},notification_only:true})}));console.log(JSON.stringify({status:'ok',data:{items,cursor:'c1',has_more:false}}));}
+else if(a.includes('inbox')) {const items=a.includes('--cursor')?(fs.existsSync(${JSON.stringify(join(dir, 'new-arrivals.json'))})?JSON.parse(fs.readFileSync(${JSON.stringify(join(dir, 'new-arrivals.json'))},'utf8')):[]):Array.from({length:100},(_,i)=>({id:'id'+i,from:'@test#worker'+i,to:'@test#main',message:JSON.stringify({kind:i<50?'result':'progress',summary:'PRIVATE-BODY-SENTINEL',ref:{id:'ref'+i,revision:'rev'},notification_only:true})}));console.log(JSON.stringify({status:'ok',data:{items,cursor:'c1',has_more:false}}));}
 else if(a.includes('--once'))fs.writeFileSync(a[a.indexOf('--cursor-file')+1],'{}',{mode:0o600});
-else setInterval(()=>{},1000);
+else setInterval(()=>console.log('{}'),50);
 `, { mode: 0o700 });
   writeFileSync(join(dir, '.pi/msg.json'), JSON.stringify({ enabled: true, candidateMode, executable, configDir: join(dir, 'cli'), username: 'tester', remote: false, agent: 'main', subscription: 'reader', mergeMs: 100, maxPending: 200 }), { mode: 0o600 });
   const handlers = new Map<string, (...args: unknown[]) => unknown>(); const tools = new Map<string, unknown>(); const wakes: { text: string; options: unknown; message: { customType: string; details: unknown } }[] = [];
@@ -84,9 +84,9 @@ else setInterval(()=>{},1000);
     assert.equal(widget!().render(180).length, 3, '/msg toggles back to compact strip');
     assert.deepEqual([...shortcuts.keys()].sort(), ['ctrl+alt+d', 'ctrl+alt+down', 'ctrl+alt+m', 'ctrl+alt+up']);
     await shortcuts.get('ctrl+alt+m')!.handler(context);
-    await shortcuts.get('ctrl+alt+down')!.handler(context);
-    assert.ok(widget!().render(180).some(line => line.startsWith('›') && line.includes('worker98')));
     await shortcuts.get('ctrl+alt+up')!.handler(context);
+    assert.ok(widget!().render(180).some(line => line.startsWith('›') && line.includes('worker98')));
+    await shortcuts.get('ctrl+alt+down')!.handler(context);
     assert.ok(widget!().render(180).some(line => line.startsWith('›') && line.includes('worker99')));
     await shortcuts.get('ctrl+alt+d')!.handler(context);
     assert.equal(customCalls, 1, 'only explicit modified details shortcut opens overlay');
@@ -197,5 +197,14 @@ else setInterval(()=>{},1000);
     const retryClaim = JSON.parse((await deliveryTool.execute('claim', { action: 'claim', id: 'id0', lease_seconds: 5 })).content[0]!.text);
     await deliveryTool.execute('fail', { action: 'fail', id: 'id0', token: retryClaim.token });
     assert.equal((await readState()).attempts, 1, 'retry keeps lease attempt boundary');
+    await commandHandler!('history', context); await commandHandler!('fold', context);
+    const arrivals = ['live-a', 'live-b'].map((id, i) => ({ id, from: '@test#live' + i, to: '@test#main', created_at: '2000-01-01T00:00:00Z', message: JSON.stringify({ kind: 'progress', summary: id, requires_action: false }) }));
+    writeFileSync(join(dir, 'new-arrivals.json'), JSON.stringify(arrivals));
+    for (let i = 0; i < 100 && !widget!().render(180).join('\n').includes('live-b'); i++) await sleep(20);
+    const tail = widget!().render(180);
+    assert.ok(tail[1]?.includes('live-a')); assert.ok(tail[2]?.includes('live-b'), 'listener hint reconciles into refreshed widget with latest arrival at bottom despite old sender timestamp');
+    await sleep(120); // Repeated listener hints return the same IDs.
+    assert.deepEqual(widget!().render(180), tail, 'duplicate hints neither duplicate nor reorder tail records');
+    assert.equal((await readState()).state, 'pending', 'arrival refresh does not complete independent work');
   } finally { await handlers.get('session_shutdown')!({}); }
 });

@@ -8,7 +8,7 @@ function delivery(id: string, state: Delivery['state'] = 'pending', created = '2
   return { message: { id, from: '@user#sender', to: '@user#receiver', created_at: created, message: `PRIVATE-BODY-${id}\nsecond line\n\x1b[2J第三行` },
     metadata: { kind: 'task', summary: `summary ${id} 中文 🐱`, requires_action: true }, state, attempts: 0, receivedAt: created };
 }
-test('conversation is newest-first regardless of task completion; task projection stays separate', () => {
+test('conversation retains completion independently of newest-first task projection', () => {
   const old = delivery('old'); const newest = delivery('new', 'claimed', '2026-10-13T03:00:00Z');
   old.deferred = true;
   const done = delivery('done', 'completed', '2026-10-13T02:00:00Z');
@@ -88,7 +88,7 @@ test('inline queue is bounded, selection survives arrivals, and completion/histo
   const before = JSON.stringify(entries);
   assert.equal(queue.render(view, 80).length, 3);
   queue.expanded = true;
-  queue.move(entries, 40);
+  queue.move(entries, -40); // Chat-tail starts at the bottom; move up to read older records.
   const selected = queue.selected(entries)!.message.id;
   entries.push(delivery('arrival', 'pending', '2026-10-13T10:00:00Z'));
   assert.equal(queue.selected(entries)!.message.id, selected);
