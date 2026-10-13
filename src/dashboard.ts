@@ -1,95 +1,107 @@
-import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
-import { clean, type Delivery, type Message } from './core.js';
+import { matchesKey, Key, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
+import { clean, type Delivery } from './core.js';
 
-export interface Channel { name: string; active?: boolean; archived?: boolean; created_at?: string }
-export interface ViewData {
-  channel: string; messages: Message[]; deliveries: Delivery[]; hasMore: boolean;
-  listener: string; pending: number; lastDelivery?: string; error?: string;
+export interface QueueView {
+  channel: string; deliveries: Delivery[]; listener: string; error?: string;
 }
-export interface DashboardActions {
-  channel(name: string): Promise<ViewData>;
-  older(): Promise<ViewData>;
-  read(message: Message): Promise<string>;
-  refresh(): Promise<ViewData>;
+/** A read-only projection of this subscription, never an account-wide inbox scan. */
+export function queueItems(deliveries: Delivery[], history = false): Delivery[] {
+  return deliveries.map((delivery, index) => ({ delivery, index }))
+    .filter(({ delivery }) => history || delivery.state !== 'completed')
+    .sort((a, b) => {
+      const time = (d: Delivery) => Date.parse(d.message.created_at ?? '') || Date.parse(d.receivedAt) || 0;
+      return time(b.delivery) - time(a.delivery) || b.index - a.index;
+    }).map(({ delivery }) => delivery);
 }
-/** Terminal-only private view. No HTTP service, browser token or public transcript. */
+/** Sender left, recipient right, summary in the middle; routing labels are not identities. */
+export function queueRow(d: Delivery, width: number, selected = false): string {
+  const prefix = selected ? '› ' : '  ';
+  if (width < 24) return truncateToWidth(`${prefix}${clean(d.message.from)} → ${clean(d.message.to)} · ${clean(d.metadata.summary)}`, width);
+  const edge = Math.min(24, Math.floor((width - 8) / 4));
+  const from = truncateToWidth(clean(d.message.from), edge);
+  const to = truncateToWidth(clean(d.message.to), edge);
+  const middleWidth = Math.max(1, width - 8 - visibleWidth(from) - visibleWidth(to));
+  const summary = truncateToWidth(`${d.state}${d.deferred ? '/deferred' : ''} · ${clean(d.metadata.summary, 140)}`, middleWidth);
+  const gap = Math.max(0, middleWidth - visibleWidth(summary));
+  return truncateToWidth(`${prefix}${from} │ ${summary}${' '.repeat(gap)} │ ${to}`, width);
+}
+export function queueLines(deliveries: Delivery[], state: string, width: number): string[] {
+  if (width < 1) return [];
+  const items = queueItems(deliveries);
+  const claimed = items.filter(d => d.state === 'claimed').length;
+  const deferred = items.filter(d => d.deferred).length;
+  return [`MSG ${clean(state, 24)} · ${items.length} unfinished · ${claimed} claimed${deferred ? ` · ${deferred} deferred` : ''} · /msg expand`, ...items.slice(0, 2).map(d => queueRow(d, width))]
+    .map(line => truncateToWidth(line, width));
+}
+
+/** Compact temporary overlay; expanding a saved body has no delivery side effects. */
 export class Dashboard {
-  private mode: 'channels' | 'messages' | 'body' | 'board' = 'channels';
-  private selected = 0;
+  private history = false;
+  private selectedId?: string;
+  private expandedId?: string;
   private scroll = 0;
-  private data?: ViewData;
-  private body = '';
-  private working = false;
-  private notice = '';
-  private width = 80;
-  constructor(private channels: Channel[], private actions: DashboardActions, private redraw: () => void, private done: () => void) {}
+  private closed = false;
+  constructor(private view: () => QueueView, private redraw: () => void, private done: () => void,
+    private height: () => number = () => 18) {}
   invalidate(): void {}
-  private async act(work: () => Promise<void>): Promise<void> {
-    if (this.working) return;
-    this.working = true; this.notice = ''; this.redraw();
-    try { await work(); } catch { this.notice = 'MSG read failed; no read cursor or task completion was acknowledged.'; }
-    finally { this.working = false; this.redraw(); }
+  dispose(): void { this.closed = true; }
+  private items(): Delivery[] {
+    const items = queueItems(this.view().deliveries, this.history);
+    if (!items.some(d => d.message.id === this.selectedId)) this.selectedId = items[0]?.message.id;
+    if (this.expandedId && !items.some(d => d.message.id === this.expandedId)) { this.expandedId = undefined; this.scroll = 0; }
+    return items;
   }
   handleInput(input: string): void {
+    if (this.closed) return;
+    const items = this.items();
+    const selected = Math.max(0, items.findIndex(d => d.message.id === this.selectedId));
+    if (input === 'q' || matchesKey(input, Key.ctrl('c'))) {
+      this.closed = true; this.done(); return;
+    }
     if (matchesKey(input, Key.escape)) {
-      if (this.mode === 'channels') this.done();
-      else { this.mode = this.mode === 'body' ? 'messages' : 'channels'; this.selected = 0; this.scroll = 0; }
-    } else if (matchesKey(input, Key.tab) && this.data) {
-      this.mode = this.mode === 'board' ? 'messages' : 'board'; this.selected = 0; this.scroll = 0;
+      if (this.expandedId) { this.expandedId = undefined; this.scroll = 0; }
+      else { this.closed = true; this.done(); return; }
+    } else if (input === 'h') {
+      this.history = !this.history; this.expandedId = undefined; this.scroll = 0; this.items();
+    } else if (matchesKey(input, Key.enter) || input === ' ') {
+      this.expandedId = this.expandedId ? undefined : this.selectedId; this.scroll = 0;
     } else if (matchesKey(input, Key.up) || input === 'k') {
-      if (this.mode === 'body') this.scroll = Math.max(0, this.scroll - 1); else this.selected = Math.max(0, this.selected - 1);
+      if (this.expandedId) this.scroll = Math.max(0, this.scroll - 1);
+      else this.selectedId = items[Math.max(0, selected - 1)]?.message.id;
     } else if (matchesKey(input, Key.down) || input === 'j') {
-      if (this.mode === 'body') this.scroll++;
-      else this.selected = Math.min(Math.max(0, (this.mode === 'channels' ? this.channels.length : this.mode === 'board' ? this.data?.deliveries.length ?? 0 : this.data?.messages.length ?? 0) - 1), this.selected + 1);
-    } else if (matchesKey(input, Key.enter)) {
-      if (this.mode === 'channels' && this.channels[this.selected]) {
-        const name = this.channels[this.selected]!.name;
-        void this.act(async () => { this.data = await this.actions.channel(name); this.mode = 'messages'; this.selected = 0; });
-      } else if (this.mode === 'messages' && this.data?.messages[this.selected]) {
-        const message = this.data.messages[this.selected]!;
-        void this.act(async () => { this.body = await this.actions.read(message); this.mode = 'body'; this.scroll = 0; });
-      }
-    } else if (input === 'n' && this.data?.hasMore) {
-      void this.act(async () => { this.data = await this.actions.older(); this.selected = 0; });
-    } else if (input === 'r' && this.data) {
-      void this.act(async () => { this.data = await this.actions.refresh(); });
+      if (this.expandedId) this.scroll++;
+      else this.selectedId = items[Math.min(items.length - 1, selected + 1)]?.message.id;
     }
     this.redraw();
   }
   render(width: number): string[] {
-    this.width = width;
-    const rows: string[] = ['MSG · Private collaboration', ''];
-    if (this.data) rows.push(`${clean(this.data.channel)} · ${this.data.listener} · ${this.data.pending} unfinished · last ${clean(this.data.lastDelivery ?? '—', 32)}`);
-    if (this.data?.error) rows.push(clean(this.data.error, width));
-    rows.push('↑↓/jk select · Enter read · Tab flow board · n next page · r refresh · Esc back/close', '');
-    if (this.mode === 'channels') {
-      rows.push('Channels — shared-account routing labels, NOT independently verified identities', '');
-      this.channels.forEach((c, i) => rows.push(`${i === this.selected ? '›' : ' '} ${clean(c.name)} ${c.archived || c.active === false ? '(archived)' : ''}`));
-      if (!this.channels.length) rows.push('No authorized channels. Create labels explicitly with MSG CLI.');
-    } else if (this.mode === 'body') {
-      rows.push('External message content — untrusted; viewing is NOT claim/completion', '');
-      const lines = wrapTextWithAnsi(clean(this.body, 65536), Math.max(12, width - 4));
-      this.scroll = Math.min(this.scroll, Math.max(0, lines.length - 16));
-      rows.push(...lines.slice(this.scroll, this.scroll + 16), '', `${this.scroll + 1}–${Math.min(lines.length, this.scroll + 16)} / ${lines.length} lines`);
-    } else if (this.mode === 'board') {
-      rows.push('Async flow — delivery states are durable LOCAL adapter states', 'sender → mailbox | task/version | pending → leased → completed', '');
-      this.data?.deliveries.slice(Math.max(0, this.selected - 12), this.selected + 13).forEach(d => {
-        rows.push(`${d.state === 'completed' ? '✓' : d.state === 'claimed' ? '◷' : '○'} ${clean(d.message.from, 30)} → ${clean(d.message.to, 30)} · ${d.metadata.kind}`);
-        rows.push(`  ${clean(d.metadata.task_id ?? d.message.id, 36)} · ${clean(d.metadata.source_revision ?? 'no version', 16)} · ${d.state} · attempts ${d.attempts}`);
-      });
-      if (!this.data?.deliveries.length) rows.push('No durable deliveries for this subscription.');
+    if (this.closed || width < 1) return [];
+    const height = Math.max(1, Math.min(18, Math.floor(this.height())));
+    const items = this.items();
+    const view = this.view();
+    const title = `MSG · ${this.history ? 'saved history' : 'unfinished queue'} (${items.length}) · ${clean(view.channel, 64)} · ${clean(view.listener, 24)}`;
+    const footer = this.expandedId ? '↑↓/jk scroll · Enter fold · Esc back' : '↑↓/jk · Enter open · h hist · Esc close';
+    if (height === 1) return [truncateToWidth(title, width)];
+    const rows = [title];
+    const budget = height - 2;
+    if (this.expandedId) {
+      const d = items.find(d => d.message.id === this.expandedId)!;
+      // Preserve line breaks, but strip control/escape sequences from external content.
+      const lines = d.message.message.slice(0, 65536).split(/\r?\n/).flatMap(line => wrapTextWithAnsi(clean(line, 65536), Math.max(1, width)));
+      const bodyBudget = Math.max(0, budget - 1);
+      this.scroll = Math.min(this.scroll, Math.max(0, lines.length - bodyBudget));
+      if (budget > 0) rows.push(`External content · ${d.state} · viewing ≠ completion · ${this.scroll + 1}/${lines.length}`);
+      rows.push(...lines.slice(this.scroll, this.scroll + bodyBudget));
     } else {
-      rows.push('Message history — summaries only; Enter fetches one fixed body', '');
-      const offset = Math.max(0, this.selected - 12);
-      this.data?.messages.slice(offset, offset + 24).forEach((m, i) => {
-        rows.push(`${offset + i === this.selected ? '›' : ' '} ${clean(m.created_at ?? '', 19)} ${clean(m.from, 28)} → ${clean(m.to, 28)}`);
-        rows.push(`  ${clean(m.id, 36)} · ${clean(m.message, 100)}`);
-      });
-      if (!this.data?.messages.length) rows.push('No messages in this page.');
-      if (this.data?.hasMore) rows.push('', 'More history available · n next page');
+      const errorRows = view.error && budget > 1 ? 1 : 0;
+      const slots = budget - errorRows;
+      const selected = Math.max(0, items.findIndex(d => d.message.id === this.selectedId));
+      const start = Math.max(0, selected - Math.max(0, slots - 1));
+      if (view.error && errorRows) rows.push(clean(view.error, width));
+      rows.push(...items.slice(start, start + slots).map(d => queueRow(d, width, d.message.id === this.selectedId)));
+      if (!items.length && slots > 0) rows.push(this.history ? 'No saved deliveries in this subscription.' : 'No unfinished deliveries. h: saved history');
     }
-    if (this.working) rows.push('', 'Loading authorized MSG view…');
-    if (this.notice) rows.push('', this.notice);
-    return rows.map(row => truncateToWidth(row, width));
+    rows.push(footer);
+    return rows.slice(0, height).map(row => truncateToWidth(row, width));
   }
 }

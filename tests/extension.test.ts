@@ -39,13 +39,28 @@ else setInterval(()=>{},1000);
     sendMessage: (message: { content: string; customType: string; details: unknown }, options: unknown) => wakes.push({ text: message.content, message, options }),
   } as unknown as ExtensionAPI;
   piMsg(pi);
+  let customCalls = 0;
   const context = { cwd: dir, mode: 'tui', hasUI: true, ui: {
     setStatus: () => {}, notify: (text: string) => notifications.push(text),
     setWidget: (_key: string, value: typeof widget) => { widget = value; },
+    custom: async (factory: (tui: unknown, theme: unknown, keys: unknown, done: () => void) => Dashboard, options: unknown) => {
+      customCalls++;
+      assert.deepEqual(options, { overlay: true, overlayOptions: { anchor: 'center', width: '90%', maxHeight: 18, margin: 2 } });
+      const dashboard = factory({ requestRender: () => {}, terminal: { rows: 15 } }, {}, {}, () => {});
+      assert.ok(dashboard.render(40).length <= 11);
+      assert.ok(dashboard.render(80).some(line => line.includes('unfinished queue')));
+      dashboard.handleInput('\r'); dashboard.handleInput('\x1b'); dashboard.dispose();
+    },
   } };
   try {
     await handlers.get('session_start')!({}, context); await sleep(300);
     assert.ok(widget); assert.equal(widget().render(120).length, 3);
+    const journal = (await (tools.get('msg_inbox') as { execute: (id: string, args: object) => Promise<unknown> }).execute('before', {}));
+    await commandHandler!('ui', context);
+    assert.equal(customCalls, 1, 'queue opens without CLI channel/inbox scans');
+    assert.deepEqual(await (tools.get('msg_inbox') as { execute: (id: string, args: object) => Promise<unknown> }).execute('after', {}), journal, 'viewing does not mutate deliveries');
+    await commandHandler!('ui', { ...context, mode: 'rpc' });
+    assert.equal(customCalls, 1, 'RPC must not open a terminal component');
     if (candidateMode === 'manual') {
       assert.equal(wakes.length, 0, 'arrivals never start model work in manual mode');
       await commandHandler!('defer id0', context);
@@ -69,22 +84,12 @@ else setInterval(()=>{},1000);
     assert.ok(wakes[0]?.text.includes('agent @test#worker'));
     assert.ok(wakes[0]?.text.includes('not user instructions'));
     assert.ok(tools.has('msg_delivery')); assert.ok(tools.has('msg_send'));
+    const deliveryTool = tools.get('msg_delivery') as { execute: (id: string, args: object) => Promise<{ content: { text: string }[] }> };
+    const claim = JSON.parse((await deliveryTool.execute('claim', { action: 'claim', id: 'id99' })).content[0]!.text);
+    assert.ok(widget!().render(180)[0]?.includes('100 unfinished'), 'claimed remains in current queue');
+    await deliveryTool.execute('complete', { action: 'complete', id: 'id99', token: claim.token });
+    assert.ok(widget!().render(180)[0]?.includes('99 unfinished'), 'actual completion removes delivery from current queue');
     const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
     handlers.get('before_agent_start')!(event); assert.match(event.systemPromptOptions.sections.msg_collaboration!, /LOCAL adapter leases/);
   } finally { await handlers.get('session_shutdown')!({}); }
-});
-test('channel browser reads fixed bodies only on selection; escape and terminal safety', async () => {
-  let reads = 0; let closed = false;
-  const dashboard = new Dashboard([{ name: 'main' }], {
-    channel: async channel => ({ channel, messages: [{ id: 'fixed-id', from: '@user#worker', to: '@user#main', message: 'summary' }], deliveries: [], hasMore: false, listener: 'live', pending: 0 }),
-    older: async () => { throw new Error('unexpected'); }, refresh: async () => { throw new Error('unexpected'); },
-    read: async () => { reads++; return '\x1b[2JPRIVATE-BODY'; },
-  }, () => {}, () => { closed = true; });
-  dashboard.handleInput('\r'); await sleep(0); assert.equal(reads, 0);
-  dashboard.handleInput('\r'); await sleep(0); assert.equal(reads, 1);
-  // pi-tui may add its own harmless SGR resets. The untrusted payload's
-  // clear-screen command must never survive sanitization.
-  assert.ok(dashboard.render(60).every(line => !line.includes('\x1b[2J')));
-  assert.ok(dashboard.render(60).some(line => line.includes('PRIVATE-BODY')));
-  dashboard.handleInput('\x1b'); dashboard.handleInput('\x1b'); dashboard.handleInput('\x1b'); assert.equal(closed, true);
 });

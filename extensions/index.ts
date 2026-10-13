@@ -4,9 +4,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { type Config, Store, clean, label, compact, checkFile, atomicJSON } from '../src/core.js';
-import { command, Subscription, send, type Page } from '../src/transport.js';
-import { Dashboard, type Channel, type ViewData } from '../src/dashboard.js';
-import { candidates, candidateKey, candidateLines, candidateNotice } from '../src/candidates.js';
+import { Subscription, send } from '../src/transport.js';
+import { Dashboard, queueLines } from '../src/dashboard.js';
+import { candidates, candidateKey, candidateNotice } from '../src/candidates.js';
 
 const guidance = `MSG is the collaboration channel, not an agent launcher or authorization boundary.
 When collaboration is authorized, use distinct mailbox labels under the selected account. Put substantive work in one private discussion tree per task; mailbox notices route fixed id/revision references. Send brief task/progress/result notifications, reuse message IDs on retries, and read only needed fixed bodies. Never send keys or private runtime data to a public topic.
@@ -31,7 +31,7 @@ export default function piMsg(pi: ExtensionAPI): void {
     if (ctx?.mode === 'tui') {
       if (!subscription || !store) ctx.ui.setWidget('pi-msg-candidates', undefined);
       else ctx.ui.setWidget('pi-msg-candidates', () => ({
-        render: (width: number) => candidateLines(store?.journal.deliveries ?? [], subscription?.state ?? 'off', announced, width),
+        render: (width: number) => queueLines(store?.journal.deliveries ?? [], subscription?.state ?? 'off', width),
         invalidate: () => {},
       }), { placement: 'aboveEditor' });
     }
@@ -149,40 +149,15 @@ export default function piMsg(pi: ExtensionAPI): void {
           context.ui.notify(JSON.stringify({ state: subscription?.state ?? 'off', pending: store?.pending().length ?? 0, oldest: store?.pending()[0]?.receivedAt, lastDelivery: subscription?.lastDelivery, wakes: wakeCount, error: subscription?.lastError }), 'info'); return;
         }
         if (action !== 'ui') throw new Error('Use /msg [ui|connect|disconnect|status|candidates|next [ID]|defer ID|resume ID]');
-        if (!context.hasUI) throw new Error('Channel browser needs interactive Pi; use msg_inbox in RPC/headless mode.');
+        if (context.mode !== 'tui' || !context.hasUI) throw new Error('Message queue needs interactive Pi; use msg_inbox in RPC/headless mode.');
         const active = requireStore();
-        const listed = await command(active.config, ['agent', 'list', ...(active.config.remote ? ['--remote'] : [])]) as Channel[] | { agents: Channel[] };
-        const channels = Array.isArray(listed) ? listed : listed.agents;
-        if (!Array.isArray(channels)) throw new Error('Unsupported MSG channel list');
-        let channel = active.config.agent;
-        let cursor: string | undefined;
-        let page: Page | undefined;
-        const view = async (reset = false): Promise<ViewData> => {
-          if (reset) cursor = undefined;
-          page = await command({ ...active.config, agent: channel }, ['agent', 'inbox', ...(active.config.remote ? ['--remote'] : []), '--limit', '50', ...(cursor ? ['--cursor', cursor] : [])]) as Page;
-          if (!Array.isArray(page.items) || typeof page.cursor !== 'string') throw new Error('Unsupported MSG history page');
-          const history = page;
-          return { channel, messages: history.items, hasMore: history.has_more,
-            get deliveries() { return channel === active.config.agent ? active.journal.deliveries : []; },
-            get listener() { return subscription?.state ?? 'stopped'; },
-            get pending() { return active.pending().length; },
-            get lastDelivery() { return subscription?.lastDelivery; },
-            get error() { return subscription?.lastError; },
-          };
-        };
         try {
-        await context.ui.custom<void>((tui, _theme, _keys, done) => {
-          redrawDashboard = () => tui.requestRender();
-          return new Dashboard(channels, {
-          channel: async name => { channel = label(name.split('#').at(-1)!); return view(true); },
-          older: async () => { cursor = page?.cursor; return view(); },
-          refresh: async () => view(true),
-          read: async message => {
-            const body = await command({ ...active.config, agent: channel }, ['agent', 'read', message.id, ...(active.config.remote ? ['--remote'] : [])]) as { message: string };
-            return body.message;
-          },
-        }, () => tui.requestRender(), () => done(undefined));
-        });
+          await context.ui.custom<void>((tui, _theme, _keys, done) => {
+            redrawDashboard = () => tui.requestRender();
+            return new Dashboard(() => ({ channel: active.config.agent, deliveries: active.journal.deliveries,
+              listener: subscription?.state ?? 'stopped', error: subscription?.lastError }),
+              () => tui.requestRender(), () => done(undefined), () => Math.max(1, tui.terminal.rows - 4));
+          }, { overlay: true, overlayOptions: { anchor: 'center', width: '90%', maxHeight: 18, margin: 2 } });
         } finally { redrawDashboard = undefined; }
       } catch (e) { context.ui.notify(clean((e as Error).message), 'warning'); }
     },

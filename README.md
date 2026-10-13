@@ -21,8 +21,9 @@ Event-driven [MSG](https://github.com/TokenNotIncluded/msg) collaboration inside
 - Gives agents bounded summaries, single-ID body reads, and compact send receipts
   in remote **and local** modes. It does not repeat a just-sent body into context.
 - Adds concise collaboration guidance when a subscription is connected.
-- Provides an interactive terminal channel browser, fixed-message reader and live
-  asynchronous delivery board. Private history is not exported to a web server.
+- Shows a compact newest-first point-to-point message queue from the current
+  subscription's saved deliveries, with keyboard expansion and a separate history view.
+  Private history is not exported to a web server.
 
 ## Install
 
@@ -103,7 +104,8 @@ independent identities or a sandbox.
 
 ## User controls and UI
 
-- `/msg` or `/msg ui`: authorized channel list → message summaries → selected body.
+- `/msg` or `/msg ui`: compact overlay for the current subscription's unfinished message queue,
+  newest first; sender on the left, summary in the middle, recipient on the right.
 - `/msg connect`: establish/resume a configured subscription.
 - `/msg disconnect`: abort listener, retries and lease timers; keep durable work.
 - `/msg status`: state, outstanding count, oldest arrival, last delivery and wakes.
@@ -113,25 +115,35 @@ independent identities or a sandbox.
   Already queued notifications cannot be retracted through MSG.
 
 The widget uses at most three width-bounded lines, never steals editor focus, and
-is cleared on disconnect/shutdown. It shows pending, notified and claimed work separately;
-`notified` means submitted to Pi, not proof that it is still queued or has been read.
+is cleared on disconnect/shutdown. It shows the newest unfinished messages and local
+claimed/deferred counts. These are adapter delivery states, not server unread counts
+or worker runtime statistics.
 Queueing does not claim or complete a delivery. Deferred work stays in the journal and
 `msg_inbox`. User messages remain in Pi's native queue: no public extension API merges
 or reorders that queue. External notifications use custom-message provenance and cannot
 authorize new tasks, publication, deployment or broader credentials. Automatic mode is
 an explicit scheduling choice, not authorization to execute message contents.
 
-UI keys: **↑/↓** or **j/k**, **Enter** to select/read, **Tab** for the async flow
-board, **n** for the next history page, **r** to refresh history, **Esc** to go back.
-The board and listener status redraw on delivery/lease events; browsing history
-uses a separate in-memory pagination cursor, never the delivery cursor. Viewing a
-body does not claim, acknowledge or complete it. Noninteractive/RPC use has the
-same tools and background lifecycle, without opening the terminal browser.
+UI keys: **↑/↓** or **j/k** select (or scroll an expanded body), **Enter/Space**
+expand/collapse, **h** switch saved history/current queue, **Esc** collapse/back or
+close, **q/Ctrl+C** close immediately. The focused overlay is at most 18 rows and
+shrinks on small terminals; closing it returns to Pi's editor. Use the keyboard in
+both regular and fullscreen Pi modes; no mouse-click behavior is claimed.
 
-Mailbox channels let a person inspect coordinator and worker histories under the
-CLI's existing authority. The flow board describes this subscription's durable
-local deliveries, not every worker's actual runtime or independently proven work.
-It marks `source_revision` and attempts when provided. No public presence is inferred.
+The queue redraws on delivery/lease events and keeps selection by message ID when
+new messages arrive. Locally completed deliveries disappear from the current queue;
+claimed and deferred deliveries remain unfinished. Only `msg_delivery complete` with
+a valid claim token completes work: expanding, collapsing, queueing and history
+viewing do not claim, ACK, complete or advance either subscription cursor.
+
+History shows saved deliveries in this subscription, including completed entries;
+it does not enumerate every account mailbox or rescan a live inbox. Historical
+backfill already known to the subscription remains visible until actually completed,
+not silently discarded by age. Full mailbox history remains available through the
+MSG CLI. UI sorting does not reorder the journal or change `/msg next` scheduling.
+No worker identity, presence, token/tool count or server unread state is inferred.
+Noninteractive/RPC uses the same tools and background lifecycle, without opening
+custom terminal components.
 
 ## Agent tools
 
