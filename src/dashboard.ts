@@ -38,27 +38,54 @@ export function queueRow(d: Delivery, width: number, selected = false, labels?: 
   // Sanitize external handles/labels before adding only trusted theme escapes.
   const sender = displayHandle(d.message.from, labels);
   const recipient = displayHandle(d.message.to, labels);
-  if (width < 36) {
-    const available = Math.max(0, width - visibleWidth(prefix) - 3);
-    const left = Math.ceil(available / 2);
-    const from = roleColor(truncateToWidth(sender, left, '…'), 'sender', presentation.theme);
-    const to = roleColor(truncateToWidth(recipient, available - left, '…'), 'recipient', presentation.theme);
-    return fit(`${prefix}${from} → ${to}`, width, presentation.theme);
-  }
-  const edge = Math.max(1, Math.min(labels?.size ? 40 : 24, Math.floor((width - visibleWidth(prefix) - 6) / 4)));
-  const from = roleColor(truncateToWidth(sender, edge), 'sender', presentation.theme);
-  const to = roleColor(truncateToWidth(recipient, edge), 'recipient', presentation.theme);
-  const middleWidth = Math.max(1, width - visibleWidth(prefix) - 6 - visibleWidth(from) - visibleWidth(to));
-  const summary = truncateToWidth(`${d.state}${d.deferred ? '/deferred' : ''} · ${clean(d.metadata.summary, 140)}`, middleWidth);
+  if (visibleWidth(prefix + sender + ' → ' + recipient) > width) return fit(`${prefix}→ addresses need /msg details`, width, presentation.theme);
+  const from = roleColor(sender, 'sender', presentation.theme);
+  const to = roleColor(recipient, 'recipient', presentation.theme);
+  const middleWidth = width - visibleWidth(prefix) - 6 - visibleWidth(from) - visibleWidth(to);
+  if (middleWidth < 1) return fit(`${prefix}${from} → ${to}`, width, presentation.theme);
+  const summary = truncateToWidth(`${d.state}${d.deferred ? '/deferred' : ''}${d.notification ? '/' + d.notification.phase : ''} · ${clean(d.metadata.summary, 140)}`, middleWidth);
   const gap = Math.max(0, middleWidth - visibleWidth(summary));
   return fit(`${prefix}${from} → ${summary}${' '.repeat(gap)} │ ${to}`, width, presentation.theme);
 }
-export function queueLines(deliveries: Delivery[], state: string, width: number, labels?: ReadonlyMap<string, string>, presentation: QueuePresentation = {}): string[] {
+/** Complete identities precede summary/labels; never present a partial mailbox. */
+export function queueBlock(d: Delivery, width: number, selected = false, presentation: QueuePresentation = {}): string[] {
+  const from = clean(stripVTControlCharacters(d.message.from), 512);
+  const to = clean(stripVTControlCharacters(d.message.to), 512);
+  const a = /^(@[A-Za-z0-9_-]+)(#[A-Za-z0-9_-]+)$/.exec(from);
+  const b = /^(@[A-Za-z0-9_-]+)(#[A-Za-z0-9_-]+)$/.exec(to);
+  const owner = a && b && a[1] === b[1] ? a[1] : undefined;
+  const prefix = `${selected ? '›' : ' '} ${transportMarker(presentation.remote)}`;
+  const lines = owner ? [`${prefix} owner ${owner}`, `from ${a![2]}`, `to ${b![2]}`] : [`${prefix} from ${from}`, `to ${to}`];
+  const addresses = lines.flatMap((line, index) => wrapTextWithAnsi(roleColor(line, index === lines.length - 1 ? 'recipient' : 'sender', presentation.theme), Math.max(1, width)));
+  return [...addresses, fit(`${d.state}${d.deferred ? ' / deferred' : ''}${d.notification ? ' / ' + d.notification.phase : ''}`, width, presentation.theme)];
+}
+function boundedRows(items: Delivery[], width: number, budget: number, selectedId: string | undefined, labels: ReadonlyMap<string, string> | undefined, presentation: QueuePresentation, total = items.length): string[] {
+  if (budget < 1 || !items.length) return [];
+  const chosen = items.find(d => d.message.id === selectedId) ?? items[0]!;
+  const fits = (d: Delivery) => visibleWidth(`  ${transportMarker(presentation.remote)} ${displayHandle(d.message.from, labels)} → ${displayHandle(d.message.to, labels)}`) <= width;
+  if (items.slice(0, budget).every(fits)) return items.slice(0, budget).map(d => queueRow(d, width, d.message.id === selectedId, labels, presentation));
+  const block = queueBlock(chosen, width, chosen.message.id === selectedId, presentation);
+  const others = total > 1 ? [`+${total - 1} other entries · /msg up/down`] : [];
+  if (block.length + others.length <= budget) return [...block, ...others];
+  return [fit(`${chosen.message.id === selectedId ? '› ' : ''}Addresses need details (${total} entries) · Ctrl+Alt+D /msg details`, width, presentation.theme)];
+}
+export function nextHint(d: Delivery): string {
+  if (d.state === 'completed') return 'Completed locally; viewing is not a server receipt.';
+  if (d.state === 'claimed') return 'Claimed locally; complete/fail with the current token, or wait for lease expiry. Viewing is not completion.';
+  if (d.deferred) return `Deferred; /msg resume ${d.message.id}, then /msg next ${d.message.id}. No work is authorized by this message.`;
+  if (!d.metadata.requires_action) return 'Informational; no automatic wake. Read the fixed reference only if relevant to authorized work.';
+  if (d.notification?.phase === 'queued') return 'Queued in Pi, not completed; wait for the safe follow-up boundary. After an interrupted restart use /msg next ID. No new authority.';
+  if (d.notification?.phase === 'observed') return 'Notice entered Pi, not proof of processing. Use msg_read and claim only for authorized work; completion needs the lease token.';
+  return `Pending${d.notification ? ' / ' + d.notification.phase : ''}; /msg next ${d.message.id} queues an external notice, not completion or new authority. Then msg_read and msg_delivery claim for authorized work.`;
+}
+export function queueLines(deliveries: Delivery[], state: string, width: number, labels?: ReadonlyMap<string, string>, presentation: QueuePresentation = {}, budget = 8): string[] {
   if (width < 1) return [];
   const items = queueItems(deliveries);
   const claimed = items.filter(d => d.state === 'claimed').length;
   const deferred = items.filter(d => d.deferred).length;
-  return [`MSG ${transportMarker(presentation.remote)} ${clean(state, 24)} · ${items.length} unfinished · ${claimed} claimed${deferred ? ` · ${deferred} deferred` : ''} · /msg ui expand`, ...items.slice(0, 2).map(d => queueRow(d, width, false, labels, presentation))]
+  const rows = boundedRows(items, width, Math.max(0, budget - 1), undefined, labels, presentation);
+  const simple = rows.every(row => row.includes(' → '));
+  return [`MSG ${transportMarker(presentation.remote)} ${clean(state, 24)} · ${items.length} unfinished · ${claimed} claimed${deferred ? ` · ${deferred} deferred` : ''} · /msg ui expand`, ...(simple ? rows.slice(0, 2) : rows)]
     .map(line => fit(line, width, presentation.theme));
 }
 
@@ -82,8 +109,8 @@ export class InlineQueue {
     this.selectedId = items[Math.max(0, Math.min(items.length - 1, index + delta))]?.message.id;
   }
   render(view: QueueView, width: number, availableRows = 24): string[] {
-    if (!this.expanded) return queueLines(view.deliveries, view.listener, width, view.labels, view)
-      .slice(0, Math.max(1, Math.floor(availableRows / 3)));
+    if (!this.expanded) return queueLines(view.deliveries, view.listener, width, view.labels, view, Math.max(1, Math.min(8, Math.floor(availableRows / 3))))
+      .slice(0, Math.max(1, Math.min(8, Math.floor(availableRows / 3))));
     if (width < 1) return [];
     // Reserve most terminal rows for the transcript/editor, even after expansion.
     const height = Math.max(1, Math.min(8, Math.floor(availableRows / 3)));
@@ -94,7 +121,7 @@ export class InlineQueue {
       const slots = height - 2;
       const index = Math.max(0, items.findIndex(d => d.message.id === this.selectedId));
       const start = Math.max(0, index - slots + 1);
-      rows.push(...items.slice(start, start + slots).map(d => queueRow(d, width, d.message.id === this.selectedId, view.labels, view)));
+      rows.push(...boundedRows(items.slice(start), width, slots, this.selectedId, view.labels, view, items.length));
       if (!items.length) rows.push('No deliveries in this view. /msg history');
     }
     if (height > 1) rows.push('Ctrl+Alt+↑↓ select · Ctrl+Alt+D details · /msg history · /msg fold');
@@ -157,7 +184,8 @@ export class Dashboard {
     if (this.expandedId) {
       const d = items.find(d => d.message.id === this.expandedId)!;
       // Preserve line breaks, but strip control/escape sequences from external content.
-      const lines = d.message.message.slice(0, 65536).split(/\r?\n/).flatMap(line => wrapTextWithAnsi(clean(line, 65536), Math.max(1, width)));
+      const detail = [`From: ${clean(stripVTControlCharacters(d.message.from), 512)}`, `To: ${clean(stripVTControlCharacters(d.message.to), 512)}`, nextHint(d), '', ...d.message.message.slice(0, 65536).split(/\r?\n/)];
+      const lines = detail.flatMap(line => wrapTextWithAnsi(clean(stripVTControlCharacters(line), 65536), Math.max(1, width)));
       const bodyBudget = Math.max(0, budget - 1);
       this.scroll = Math.min(this.scroll, Math.max(0, lines.length - bodyBudget));
       if (budget > 0) rows.push(`External content · ${d.state} · viewing ≠ completion · ${this.scroll + 1}/${lines.length}`);
@@ -168,7 +196,7 @@ export class Dashboard {
       const selected = Math.max(0, items.findIndex(d => d.message.id === this.selectedId));
       const start = Math.max(0, selected - Math.max(0, slots - 1));
       if (view.error && errorRows) rows.push(clean(view.error, width));
-      rows.push(...items.slice(start, start + slots).map(d => queueRow(d, width, d.message.id === this.selectedId, view.labels, view)));
+      rows.push(...boundedRows(items.slice(start), width, slots, this.selectedId, view.labels, view, items.length));
       if (!items.length && slots > 0) rows.push(this.history ? 'No saved deliveries in this subscription.' : 'No unfinished deliveries. h: saved history');
     }
     rows.push(footer);

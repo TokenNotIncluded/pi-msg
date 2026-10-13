@@ -44,20 +44,25 @@ export default function piMsg(pi: ExtensionAPI): void {
   }
   function enqueue(items: ReturnType<typeof candidates>): void {
     if (!items.length) return;
-    pi.sendMessage({ customType: 'msg-candidates', content: candidateNotice(items), display: true,
-      details: { source: 'external-agent', ids: items.map(d => d.message.id) },
-    }, { triggerTurn: true, deliverAs: 'followUp' });
+    const ids = items.map(d => d.message.id);
+    // Persist before Pi accepts the wake; a crash is recoverable, not processed.
+    store!.notify(ids, 'queued');
+    try {
+      pi.sendMessage({ customType: 'msg-candidates', content: candidateNotice(items), display: true,
+        details: { source: 'external-agent', ids, keys: items.map(candidateKey) },
+      }, { triggerTurn: true, deliverAs: 'followUp' });
+    } catch (e) { store!.notify(ids, 'recoverable'); throw e; }
     items.forEach(d => announced.add(candidateKey(d))); wakeCount++; update();
   }
   function schedule(): void {
     update();
     if (!store || timer || store.config.candidateMode !== 'followUp') return;
-    const actionable = candidates(store.journal.deliveries).filter(d => !announced.has(candidateKey(d)));
+    const actionable = candidates(store.journal.deliveries).filter(d => !announced.has(candidateKey(d)) && !(d.notification?.attempt === d.attempts && d.notification.phase === 'recoverable'));
     if (!actionable.length) return;
     const delay = actionable.some(d => ['blocker', 'blocked', 'result'].includes(d.metadata.kind)) ? Math.min(250, store.config.mergeMs) : store.config.mergeMs;
     timer = setTimeout(() => {
       timer = undefined;
-      const pending = candidates(store?.journal.deliveries ?? []).filter(d => !announced.has(candidateKey(d))).slice(0, 32);
+      const pending = candidates(store?.journal.deliveries ?? []).filter(d => !announced.has(candidateKey(d)) && !(d.notification?.attempt === d.attempts && d.notification.phase === 'recoverable')).slice(0, 32);
       if (!pending.length || !subscription || subscription.state === 'stopped') return;
       try {
         // Pi owns safe-boundary delivery; custom messages preserve external provenance.
@@ -124,6 +129,23 @@ export default function piMsg(pi: ExtensionAPI): void {
     try { load(); if (enabled) await connect(); } catch (e) { ctx.ui.notify(clean((e as Error).message), 'warning'); }
   });
   pi.on('session_shutdown', async () => { await disconnect(); });
+  pi.on('message_start', event => {
+    if (!store || event.message.role !== 'custom' || event.message.customType !== 'msg-candidates') return;
+    const details = event.message.details as { keys?: unknown } | undefined;
+    const keys = details?.keys;
+    if (!Array.isArray(keys)) return;
+    const ids = store.pending().filter(d => keys.includes(candidateKey(d)) && d.notification?.phase === 'queued').map(d => d.message.id);
+    if (ids.length) store.notify(ids, 'observed');
+    update();
+  });
+  pi.on('agent_settled', (_event, context) => {
+    if (!store) return;
+    // Notification-only final boundary: never request another model turn here.
+    const ids = store.pending().filter(d => d.notification?.phase === 'observed' || (d.notification?.phase === 'queued' && !context.hasPendingMessages())).map(d => d.message.id);
+    if (ids.length) store.notify(ids, 'recoverable');
+    for (const d of store.pending()) if (ids.includes(d.message.id)) announced.delete(candidateKey(d));
+    update();
+  });
   async function queueControl(action: string, context: ExtensionContext): Promise<void> {
     if (context.mode !== 'tui' || !context.hasUI) throw new Error('Message queue needs interactive Pi; use msg_inbox in RPC/headless mode.');
     const active = requireStore();
@@ -188,7 +210,7 @@ export default function piMsg(pi: ExtensionAPI): void {
           const s = requireStore(); s.expire();
           if (verb === 'candidates') {
             if (id) throw new Error('Use /msg candidates');
-            const rows = s.pending().filter(d => d.metadata.requires_action).map(d => `${d.message.id} · agent ${clean(d.message.from, 64)} · ${d.state}${d.deferred ? ' / deferred' : ''}${announced.has(candidateKey(d)) ? ' / notified' : ''} · ${clean(d.metadata.summary, 140)}`);
+            const rows = s.pending().filter(d => d.metadata.requires_action).map(d => `${d.message.id} · agent ${clean(d.message.from, 64)} · ${d.state}${d.deferred ? ' / deferred' : ''}${d.notification ? ' / ' + d.notification.phase : ''} · ${clean(d.metadata.summary, 140)}`);
             context.ui.notify(rows.slice(0, 20).join('\n') + (rows.length > 20 ? `\n+${rows.length - 20} more; use msg_inbox` : '') || 'No candidates.', 'info');
           } else if (verb === 'next') {
             const items = candidates(s.journal.deliveries).filter(d => !announced.has(candidateKey(d)));

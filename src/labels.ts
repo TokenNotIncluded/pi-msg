@@ -1,4 +1,5 @@
 import { clean } from './core.js';
+import { stripVTControlCharacters } from 'node:util';
 
 /** Explicit, session-local display metadata. Never changes a routing key or identity. */
 export class HandleLabels {
@@ -19,5 +20,6 @@ export class HandleLabels {
 export function displayHandle(handle: string, labels?: ReadonlyMap<string, string>): string {
   const text = labels?.get(handle);
   // The stable handle stays first, including when a narrow terminal truncates the label.
-  return text ? `${clean(handle, 132)} (${clean(text, 64)})` : clean(handle, 132);
+  const safe = clean(stripVTControlCharacters(handle), 512);
+  return text ? `${safe} (${clean(stripVTControlCharacters(text), 64)})` : safe;
 }

@@ -122,8 +122,14 @@ independent identities or a sandbox.
 - `/msg defer ID` / `/msg resume ID`: persistently defer or restore a pending candidate.
   Already queued notifications cannot be retracted through MSG.
 
-The compact widget uses at most three width-bounded lines; the expanded queue uses
-at most eight lines and no more than a third of the terminal height (minimum one).
+Both widget forms use at most eight width-bounded lines and no more than a third
+of the terminal height (minimum one). Short addresses retain the three-line compact
+strip. Complete addresses take priority over summary and display labels: if needed,
+show one address block with an explicit shared owner and full `#mailbox` names, or
+full `@owner#mailbox` names across owners, plus the other-entry count. If the block
+cannot fit the height budget, explicitly request details instead of showing ambiguous
+mailbox prefixes. Extremely narrow/short terminals cannot show all identities or
+shortcuts; use `/msg details` and scroll the full From/To lines there.
 It never steals editor focus, and
 is cleared on disconnect/shutdown. It shows the newest unfinished messages and local
 claimed/deferred counts. These are adapter delivery states, not server unread counts
@@ -133,6 +139,18 @@ Queueing does not claim or complete a delivery. Deferred work stays in the journ
 or reorders that queue. External notifications use custom-message provenance and cannot
 authorize new tasks, publication, deployment or broader credentials. Automatic mode is
 an explicit scheduling choice, not authorization to execute message contents.
+
+Notification state is durable and separate from delivery state: `queued` is a write-ahead record
+of a notice being handed to Pi (not a consumption receipt), `observed` means the notice entered Pi's message stream
+(not proof of model processing), and `recoverable` means unfinished work can be
+explicitly re-notified with `/msg next ID`. Restart/reconnect converts interrupted
+notices to recoverable; it never automatically replays them, even in followUp mode.
+Previously unnotified backlog still follows the configured manual/followUp policy.
+At Pi's public final settled boundary, unfinished observed notices (or queued notices
+when Pi has no pending messages) become recoverable without requesting a model turn.
+If Pi still holds a busy follow-up, it remains queued; MSG cannot retract it. After
+an ambiguous interruption, duplicates remain possible: check delivery state and use
+idempotent side effects and a fresh lease token, never queue acceptance as completion.
 
 Inline controls use Pi's public shortcut API: **Ctrl+Alt+M** expand/fold,
 **Ctrl+Alt+↑/↓** select, **Ctrl+Alt+D** open selected details. Plain arrows,

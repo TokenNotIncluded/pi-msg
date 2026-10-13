@@ -42,7 +42,8 @@ else setInterval(()=>{},1000);
   } as unknown as ExtensionAPI;
   piMsg(pi);
   let customCalls = 0;
-  const context = { cwd: dir, mode: 'tui', hasUI: true, ui: {
+  let piHasPending = true;
+  const context = { cwd: dir, mode: 'tui', hasUI: true, hasPendingMessages: () => piHasPending, ui: {
     setStatus: () => {}, notify: (text: string) => notifications.push(text),
     setWidget: (_key: string, value: ((tui: unknown, theme: unknown) => { render(width: number): string[] }) | undefined, options: unknown) => {
       if (value) assert.deepEqual(options, { placement: 'aboveEditor' });
@@ -128,5 +129,37 @@ else setInterval(()=>{},1000);
     assert.ok(widget!().render(180)[0]?.includes('99 unfinished'), 'actual completion removes delivery from current queue');
     const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
     handlers.get('before_agent_start')!(event); assert.match(event.systemPromptOptions.sections.msg_collaboration!, /LOCAL adapter leases/);
+    const inbox = tools.get('msg_inbox') as { execute: (id: string, args: object) => Promise<{ content: { text: string }[] }> };
+    const readState = async () => JSON.parse((await inbox.execute('state', { limit: 100, budget_bytes: 16384 })).content[0]!.text).items.find((d: { id: string }) => d.id === 'id0');
+    assert.equal((await readState()).notification.phase, 'queued');
+    const beforeBusy = wakes.length;
+    await handlers.get('agent_settled')!({ aborted: true }, context);
+    assert.equal((await readState()).notification.phase, 'queued', 'safe-boundary queued work remains held when Pi still has queued messages');
+    assert.equal(wakes.length, beforeBusy, 'settled never starts work');
+    await handlers.get('message_start')!({ message: { role: 'custom', customType: 'msg-candidates', details: { keys: ['id0/0'] } } }, context);
+    assert.equal((await readState()).notification.phase, 'observed');
+    await handlers.get('agent_settled')!({ aborted: true }, context);
+    assert.equal((await readState()).notification.phase, 'recoverable', 'observed is not proof of completion');
+    assert.equal((await readState()).state, 'pending');
+    await commandHandler!('next id0', context);
+    assert.equal(wakes.length, beforeBusy + 1);
+    await commandHandler!('next id0', context);
+    assert.equal(wakes.length, beforeBusy + 1, 'normal repeat does not duplicate wake');
+    piHasPending = false;
+    await handlers.get('agent_settled')!({ aborted: true }, context);
+    assert.equal((await readState()).notification.phase, 'recoverable', 'cancelled queue with no pending messages recovers without observing');
+    await commandHandler!('next id0', context);
+    const beforeRestart = wakes.length;
+    await commandHandler!('disconnect', context);
+    await commandHandler!('connect', context); await sleep(300);
+    assert.equal((await readState()).notification.phase, 'recoverable', 'queued but unprocessed survives restart');
+    assert.ok(wakes.slice(beforeRestart).every(wake => !wake.text.includes('id id0 ·')), 'restart cannot replay interrupted work, even in followUp; previously unnotified backlog can still coalesce');
+    if (candidateMode === 'manual') assert.equal(wakes.length, beforeRestart);
+    const beforeResume = wakes.length;
+    await commandHandler!('next id0', context);
+    assert.equal(wakes.length, beforeResume + 1);
+    const retryClaim = JSON.parse((await deliveryTool.execute('claim', { action: 'claim', id: 'id0', lease_seconds: 5 })).content[0]!.text);
+    await deliveryTool.execute('fail', { action: 'fail', id: 'id0', token: retryClaim.token });
+    assert.equal((await readState()).attempts, 1, 'retry keeps lease attempt boundary');
   } finally { await handlers.get('session_shutdown')!({}); }
 });
