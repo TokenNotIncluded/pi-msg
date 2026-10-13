@@ -58,11 +58,51 @@ export function queueLines(deliveries: Delivery[], state: string, width: number,
   const items = queueItems(deliveries);
   const claimed = items.filter(d => d.state === 'claimed').length;
   const deferred = items.filter(d => d.deferred).length;
-  return [`MSG ${transportMarker(presentation.remote)} ${clean(state, 24)} · ${items.length} unfinished · ${claimed} claimed${deferred ? ` · ${deferred} deferred` : ''} · /msg expand`, ...items.slice(0, 2).map(d => queueRow(d, width, false, labels, presentation))]
+  return [`MSG ${transportMarker(presentation.remote)} ${clean(state, 24)} · ${items.length} unfinished · ${claimed} claimed${deferred ? ` · ${deferred} deferred` : ''} · /msg ui expand`, ...items.slice(0, 2).map(d => queueRow(d, width, false, labels, presentation))]
     .map(line => fit(line, width, presentation.theme));
 }
 
-/** Compact temporary overlay; expanding a saved body has no delivery side effects. */
+/** Unfocused widget: selection is driven only by explicit commands/modified shortcuts. */
+export class InlineQueue {
+  expanded = false;
+  history = false;
+  private selectedId?: string;
+  reset(): void { this.expanded = false; this.history = false; this.selectedId = undefined; }
+  private items(deliveries: Delivery[]): Delivery[] {
+    const items = queueItems(deliveries, this.history);
+    if (!items.some(d => d.message.id === this.selectedId)) this.selectedId = items[0]?.message.id;
+    return items;
+  }
+  selected(deliveries: Delivery[]): Delivery | undefined {
+    return this.items(deliveries).find(d => d.message.id === this.selectedId);
+  }
+  move(deliveries: Delivery[], delta: number): void {
+    const items = this.items(deliveries);
+    const index = Math.max(0, items.findIndex(d => d.message.id === this.selectedId));
+    this.selectedId = items[Math.max(0, Math.min(items.length - 1, index + delta))]?.message.id;
+  }
+  render(view: QueueView, width: number, availableRows = 24): string[] {
+    if (!this.expanded) return queueLines(view.deliveries, view.listener, width, view.labels, view)
+      .slice(0, Math.max(1, Math.floor(availableRows / 3)));
+    if (width < 1) return [];
+    // Reserve most terminal rows for the transcript/editor, even after expansion.
+    const height = Math.max(1, Math.min(8, Math.floor(availableRows / 3)));
+    const items = this.items(view.deliveries);
+    const title = `MSG ${transportMarker(view.remote)} ${clean(view.listener, 24)} · ${this.history ? 'saved history' : 'unfinished queue'} (${items.length}) · ${items.filter(d => d.state === 'claimed').length} claimed · ${items.filter(d => d.deferred).length} deferred`;
+    const rows = [view.error ? `${title} · ${clean(view.error, 120)}` : title];
+    if (height > 2) {
+      const slots = height - 2;
+      const index = Math.max(0, items.findIndex(d => d.message.id === this.selectedId));
+      const start = Math.max(0, index - slots + 1);
+      rows.push(...items.slice(start, start + slots).map(d => queueRow(d, width, d.message.id === this.selectedId, view.labels, view)));
+      if (!items.length) rows.push('No deliveries in this view. /msg history');
+    }
+    if (height > 1) rows.push('Ctrl+Alt+↑↓ select · Ctrl+Alt+D details · /msg history · /msg fold');
+    return rows.map(row => fit(row, width, view.theme));
+  }
+}
+
+/** Compact temporary details overlay; viewing a saved body has no delivery side effects. */
 export class Dashboard {
   private history = false;
   private selectedId?: string;
@@ -70,7 +110,9 @@ export class Dashboard {
   private scroll = 0;
   private closed = false;
   constructor(private view: () => QueueView, private redraw: () => void, private done: () => void,
-    private height: () => number = () => 18) {}
+    private height: () => number = () => 18, initial?: { id: string; history: boolean }) {
+    if (initial) { this.selectedId = initial.id; this.expandedId = initial.id; this.history = initial.history; }
+  }
   invalidate(): void {}
   dispose(): void { this.closed = true; }
   private items(): Delivery[] {

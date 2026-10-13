@@ -1,11 +1,12 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { Key } from '@earendil-works/pi-tui';
 import { Type } from '@sinclair/typebox';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { type Config, Store, clean, label, compact, checkFile, atomicJSON } from '../src/core.js';
 import { Subscription, send } from '../src/transport.js';
-import { Dashboard, queueLines } from '../src/dashboard.js';
+import { Dashboard, InlineQueue } from '../src/dashboard.js';
 import { HandleLabels } from '../src/labels.js';
 import { candidates, candidateKey, candidateNotice } from '../src/candidates.js';
 
@@ -24,6 +25,8 @@ export default function piMsg(pi: ExtensionAPI): void {
   let started = false;
   let wakeCount = 0;
   let redrawDashboard: (() => void) | undefined;
+  const inlineQueue = new InlineQueue();
+  let detailsOpen = false;
   const announced = new Set<string>();
   const handleLabels = new HandleLabels();
   const configPath = join(homedir(), '.config', 'pi-msg', 'config.json');
@@ -32,8 +35,8 @@ export default function piMsg(pi: ExtensionAPI): void {
     ctx?.ui.setStatus('pi-msg', subscription ? `MSG ${subscription.state} · ${store?.pending().length ?? 0} pending` : 'MSG off');
     if (ctx?.mode === 'tui') {
       if (!subscription || !store) ctx.ui.setWidget('pi-msg-candidates', undefined);
-      else ctx.ui.setWidget('pi-msg-candidates', (_tui, theme) => ({
-        render: (width: number) => queueLines(store?.journal.deliveries ?? [], subscription?.state ?? 'off', width, handleLabels.entries, { remote: store?.config.remote, theme }),
+      else ctx.ui.setWidget('pi-msg-candidates', (tui, theme) => ({
+        render: (width: number) => inlineQueue.render({ channel: store?.config.agent ?? '', deliveries: store?.journal.deliveries ?? [], listener: subscription?.state ?? 'off', error: subscription?.lastError, labels: handleLabels.entries, remote: store?.config.remote, theme }, width, tui.terminal.rows),
         invalidate: () => {},
       }), { placement: 'aboveEditor' });
     }
@@ -95,7 +98,7 @@ export default function piMsg(pi: ExtensionAPI): void {
   async function disconnect(): Promise<void> {
     if (timer) clearTimeout(timer); timer = undefined;
     const old = subscription; subscription = undefined;
-    await old?.stop(); store = undefined; announced.clear(); handleLabels.clear(); update();
+    await old?.stop(); store = undefined; announced.clear(); handleLabels.clear(); inlineQueue.reset(); update();
   }
   async function connect(): Promise<void> {
     await disconnect(); load();
@@ -121,8 +124,43 @@ export default function piMsg(pi: ExtensionAPI): void {
     try { load(); if (enabled) await connect(); } catch (e) { ctx.ui.notify(clean((e as Error).message), 'warning'); }
   });
   pi.on('session_shutdown', async () => { await disconnect(); });
+  async function queueControl(action: string, context: ExtensionContext): Promise<void> {
+    if (context.mode !== 'tui' || !context.hasUI) throw new Error('Message queue needs interactive Pi; use msg_inbox in RPC/headless mode.');
+    const active = requireStore();
+    ctx = context;
+    if (action === 'details') {
+      if (detailsOpen) return;
+      const selected = inlineQueue.selected(active.journal.deliveries);
+      if (!selected) throw new Error('No selected delivery; use /msg history for saved deliveries.');
+      detailsOpen = true;
+      try {
+        await context.ui.custom<void>((tui, theme, _keys, done) => {
+          redrawDashboard = () => tui.requestRender();
+          return new Dashboard(() => ({ channel: active.config.agent, deliveries: active.journal.deliveries,
+            listener: subscription?.state ?? 'stopped', error: subscription?.lastError, labels: handleLabels.entries, remote: active.config.remote, theme }),
+            () => tui.requestRender(), () => done(undefined), () => Math.max(1, Math.min(10, Math.floor(tui.terminal.rows / 2))),
+            { id: selected.message.id, history: inlineQueue.history });
+        }, { overlay: true, overlayOptions: { anchor: 'bottom-center', width: 72, maxHeight: 10, margin: 1 } });
+      } finally { redrawDashboard = undefined; detailsOpen = false; }
+      return;
+    }
+    if (action === 'ui') inlineQueue.expanded = !inlineQueue.expanded;
+    else if (action === 'ui expand') inlineQueue.expanded = true;
+    else if (action === 'fold') inlineQueue.expanded = false;
+    else if (action === 'history') { inlineQueue.history = !inlineQueue.history; inlineQueue.expanded = true; }
+    else { inlineQueue.expanded = true; inlineQueue.move(active.journal.deliveries, action === 'up' ? -1 : 1); }
+    update();
+  }
+  for (const [key, action, description] of [
+    [Key.ctrlAlt('m'), 'ui', 'Toggle MSG inline queue'],
+    [Key.ctrlAlt('up'), 'up', 'Select previous MSG delivery'],
+    [Key.ctrlAlt('down'), 'down', 'Select next MSG delivery'],
+    [Key.ctrlAlt('d'), 'details', 'Open selected MSG details'],
+  ] as const) pi.registerShortcut(key, { description, handler: async context => {
+    try { await queueControl(action, context); } catch (e) { context.ui.notify(clean((e as Error).message), 'warning'); }
+  } });
   pi.registerCommand('msg', {
-    description: 'MSG queue; ui, candidates, next [ID], defer/resume ID, label HANDLE TEXT, unlabel HANDLE, labels, connect/disconnect, status',
+    description: 'MSG inline queue; ui [expand], fold, up/down, history, details, candidates, next [ID], defer/resume ID, label HANDLE TEXT, unlabel HANDLE, labels, connect/disconnect, status',
     handler: async (args, context) => {
       ctx = context;
       try {
@@ -167,17 +205,8 @@ export default function piMsg(pi: ExtensionAPI): void {
         if (action === 'status') {
           context.ui.notify(JSON.stringify({ state: subscription?.state ?? 'off', pending: store?.pending().length ?? 0, oldest: store?.pending()[0]?.receivedAt, lastDelivery: subscription?.lastDelivery, wakes: wakeCount, error: subscription?.lastError }), 'info'); return;
         }
-        if (action !== 'ui') throw new Error('Use /msg [ui|connect|disconnect|status|candidates|next [ID]|defer ID|resume ID|label HANDLE TEXT|unlabel HANDLE|labels]');
-        if (context.mode !== 'tui' || !context.hasUI) throw new Error('Message queue needs interactive Pi; use msg_inbox in RPC/headless mode.');
-        const active = requireStore();
-        try {
-          await context.ui.custom<void>((tui, theme, _keys, done) => {
-            redrawDashboard = () => tui.requestRender();
-            return new Dashboard(() => ({ channel: active.config.agent, deliveries: active.journal.deliveries,
-              listener: subscription?.state ?? 'stopped', error: subscription?.lastError, labels: handleLabels.entries, remote: active.config.remote, theme }),
-              () => tui.requestRender(), () => done(undefined), () => Math.max(1, tui.terminal.rows - 4));
-          }, { overlay: true, overlayOptions: { anchor: 'center', width: '90%', maxHeight: 18, margin: 2 } });
-        } finally { redrawDashboard = undefined; }
+        if (!['ui', 'ui expand', 'fold', 'up', 'down', 'history', 'details'].includes(action)) throw new Error('Use /msg [ui [expand]|fold|up|down|history|details|connect|disconnect|status|candidates|next [ID]|defer ID|resume ID|label HANDLE TEXT|unlabel HANDLE|labels]');
+        await queueControl(action, context);
       } catch (e) { context.ui.notify(clean((e as Error).message), 'warning'); }
     },
   });

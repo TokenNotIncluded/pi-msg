@@ -31,9 +31,11 @@ else setInterval(()=>{},1000);
   let commandHandler: (args: string, ctx: unknown) => Promise<void>;
   let widget: (() => { render(width: number): string[] }) | undefined;
   const notifications: string[] = [];
+  const shortcuts = new Map<string, { handler: (ctx: unknown) => Promise<void> }>();
   const pi = {
     on: (name: string, handler: unknown) => handlers.set(name, handler as (...args: unknown[]) => unknown),
     registerTool: (tool: { name: string }) => tools.set(tool.name, tool),
+    registerShortcut: (key: string, definition: { handler: (ctx: unknown) => Promise<void> }) => shortcuts.set(key, definition),
     registerCommand: (_name: string, definition: { handler: typeof commandHandler }) => { commandHandler = definition.handler; },
     sendUserMessage: () => { throw new Error('External notifications must not impersonate users'); },
     sendMessage: (message: { content: string; customType: string; details: unknown }, options: unknown) => wakes.push({ text: message.content, message, options }),
@@ -42,13 +44,20 @@ else setInterval(()=>{},1000);
   let customCalls = 0;
   const context = { cwd: dir, mode: 'tui', hasUI: true, ui: {
     setStatus: () => {}, notify: (text: string) => notifications.push(text),
-    setWidget: (_key: string, value: typeof widget) => { widget = value; },
+    setWidget: (_key: string, value: ((tui: unknown, theme: unknown) => { render(width: number): string[] }) | undefined, options: unknown) => {
+      if (value) assert.deepEqual(options, { placement: 'aboveEditor' });
+      widget = value ? () => value({ terminal: { rows: 30 } }, { fg: (_role: string, text: string) => text }) : undefined;
+    },
+    setEditorComponent: () => { throw new Error('Queue must preserve editor'); },
+    setEditorText: () => { throw new Error('Queue must preserve draft'); },
+    onTerminalInput: () => { throw new Error('Queue must not intercept plain input'); },
     custom: async (factory: (tui: unknown, theme: unknown, keys: unknown, done: () => void) => Dashboard, options: unknown) => {
       customCalls++;
-      assert.deepEqual(options, { overlay: true, overlayOptions: { anchor: 'center', width: '90%', maxHeight: 18, margin: 2 } });
-      const dashboard = factory({ requestRender: () => {}, terminal: { rows: 15 } }, {}, {}, () => {});
-      assert.ok(dashboard.render(40).length <= 11);
-      assert.ok(dashboard.render(80).some(line => line.includes('unfinished queue')));
+      assert.deepEqual(options, { overlay: true, overlayOptions: { anchor: 'bottom-center', width: 72, maxHeight: 10, margin: 1 } });
+      const dashboard = factory({ requestRender: () => {}, terminal: { rows: 15 } }, { fg: (_role: string, text: string) => text }, {}, () => {});
+      assert.ok(dashboard.render(40).length <= 7);
+      assert.ok(dashboard.render(80).some(line => line.includes('External content')));
+      assert.ok(dashboard.render(80).some(line => line.includes('unfinished queue') || line.includes('saved history')));
       dashboard.handleInput('\r'); dashboard.handleInput('\x1b'); dashboard.dispose();
     },
   } };
@@ -57,10 +66,29 @@ else setInterval(()=>{},1000);
     assert.ok(widget); assert.equal(widget().render(120).length, 3);
     const journal = (await (tools.get('msg_inbox') as { execute: (id: string, args: object) => Promise<unknown> }).execute('before', {}));
     await commandHandler!('ui', context);
-    assert.equal(customCalls, 1, 'queue opens without CLI channel/inbox scans');
+    assert.equal(customCalls, 0, '/msg ui must not invoke custom or capture focus');
+    assert.ok(widget!().render(180).length <= 8);
+    assert.ok(widget!().render(180).some(line => line.includes('unfinished queue')));
+    assert.equal('handleInput' in widget!(), false, 'widget itself never owns plain input');
+    await commandHandler!('', context);
+    assert.equal(widget!().render(180).length, 3, '/msg toggles back to compact strip');
+    assert.deepEqual([...shortcuts.keys()].sort(), ['ctrl+alt+d', 'ctrl+alt+down', 'ctrl+alt+m', 'ctrl+alt+up']);
+    await shortcuts.get('ctrl+alt+m')!.handler(context);
+    await shortcuts.get('ctrl+alt+down')!.handler(context);
+    assert.ok(widget!().render(180).some(line => line.startsWith('›') && line.includes('worker98')));
+    await shortcuts.get('ctrl+alt+up')!.handler(context);
+    assert.ok(widget!().render(180).some(line => line.startsWith('›') && line.includes('worker99')));
+    await shortcuts.get('ctrl+alt+d')!.handler(context);
+    assert.equal(customCalls, 1, 'only explicit modified details shortcut opens overlay');
+    await commandHandler!('history', context);
+    assert.ok(widget!().render(180)[0]?.includes('saved history'));
+    await commandHandler!('details', context);
+    assert.equal(customCalls, 2, 'explicit details command works in history');
+    await commandHandler!('history', context);
+    await commandHandler!('fold', context);
     assert.deepEqual(await (tools.get('msg_inbox') as { execute: (id: string, args: object) => Promise<unknown> }).execute('after', {}), journal, 'viewing does not mutate deliveries');
     await commandHandler!('ui', { ...context, mode: 'rpc' });
-    assert.equal(customCalls, 1, 'RPC must not open a terminal component');
+    assert.equal(customCalls, 2, 'RPC must not open a terminal component');
     await commandHandler!('label @test#worker99 reviewer', context);
     assert.ok(widget!().render(180).some(line => line.includes('@test#worker99 (reviewer)')));
     await commandHandler!('unlabel @test#worker99', context);

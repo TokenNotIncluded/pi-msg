@@ -23,5 +23,6 @@ test('real Pi resource loader discovers package without user credentials or mode
     assert.ok(extension, 'real file-based extension loaded');
     assert.deepEqual([...extension.tools.keys()].sort(), ['msg_delivery', 'msg_inbox', 'msg_read', 'msg_send']);
     assert.ok(extension.commands.has('msg'));
+    assert.deepEqual([...extension.shortcuts.keys()].sort(), ['ctrl+alt+d', 'ctrl+alt+down', 'ctrl+alt+m', 'ctrl+alt+up'], 'real Pi loader registers only modified queue shortcuts');
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

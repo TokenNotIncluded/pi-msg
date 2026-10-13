@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { visibleWidth } from '@earendil-works/pi-tui';
-import { Dashboard, queueItems, queueLines, queueRow } from '../src/dashboard.js';
+import { Dashboard, InlineQueue, queueItems, queueLines, queueRow } from '../src/dashboard.js';
 import type { Delivery } from '../src/core.js';
 
 function delivery(id: string, state: Delivery['state'] = 'pending', created = '2026-10-13T01:00:00Z'): Delivery {
@@ -77,6 +77,32 @@ test('live arrival preserves selection by ID and disposed view cannot reopen', (
   dashboard.dispose(); entries.push(delivery('late'));
   dashboard.handleInput('\r'); assert.deepEqual(dashboard.render(80), []);
 });
+test('inline queue is bounded, selection survives arrivals, and completion/history are read-only', () => {
+  const entries = Array.from({ length: 160 }, (_, i) => delivery(`id${i}`));
+  const queue = new InlineQueue();
+  const view = { channel: 'main', deliveries: entries, listener: 'live', remote: false };
+  const before = JSON.stringify(entries);
+  assert.equal(queue.render(view, 80).length, 3);
+  queue.expanded = true;
+  queue.move(entries, 40);
+  const selected = queue.selected(entries)!.message.id;
+  entries.push(delivery('arrival', 'pending', '2026-10-13T10:00:00Z'));
+  assert.equal(queue.selected(entries)!.message.id, selected);
+  for (const rows of [1, 6, 15, 24, 60]) for (const width of [0, 1, 12, 40, 180]) {
+    const lines = queue.render(view, width, rows);
+    assert.ok(lines.length <= Math.max(1, Math.min(8, Math.floor(rows / 3))));
+    assert.ok(lines.every(line => visibleWidth(line) <= width));
+    if (rows >= 9 && width >= 40) assert.ok(lines.some(line => line.startsWith('›')));
+    assert.ok(!lines.join('\n').includes('PRIVATE-BODY'));
+  }
+  entries.pop(); assert.equal(JSON.stringify(entries), before);
+  queue.selected(entries)!.state = 'completed';
+  assert.notEqual(queue.selected(entries)!.message.id, selected);
+  queue.history = true;
+  assert.equal(queueItems(entries, true).length, 160);
+  queue.reset(); assert.equal(queue.expanded, false); assert.equal(queue.history, false);
+});
+
 test('empty and very short terminals are bounded', () => {
   for (const height of [1, 2, 3, 8]) {
     const dashboard = new Dashboard(() => ({ channel: 'main', deliveries: [], listener: 'stopped' }), () => {}, () => {}, () => height);

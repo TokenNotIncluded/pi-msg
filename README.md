@@ -104,7 +104,7 @@ independent identities or a sandbox.
 
 ## User controls and UI
 
-- `/msg` or `/msg ui`: compact overlay for the current subscription's unfinished message queue,
+- `/msg` or `/msg ui`: expand/fold the unfocused above-editor widget for the current subscription's unfinished message queue,
   newest first; sender on the left, summary in the middle, recipient on the right.
   Both the persistent strip and queue show `[LOCAL]` or `[NET]` from the actual
   subscription's `remote` configuration, with `[UNKNOWN]` when not known (never guessed
@@ -122,7 +122,9 @@ independent identities or a sandbox.
 - `/msg defer ID` / `/msg resume ID`: persistently defer or restore a pending candidate.
   Already queued notifications cannot be retracted through MSG.
 
-The widget uses at most three width-bounded lines, never steals editor focus, and
+The compact widget uses at most three width-bounded lines; the expanded queue uses
+at most eight lines and no more than a third of the terminal height (minimum one).
+It never steals editor focus, and
 is cleared on disconnect/shutdown. It shows the newest unfinished messages and local
 claimed/deferred counts. These are adapter delivery states, not server unread counts
 or worker runtime statistics.
@@ -132,11 +134,17 @@ or reorders that queue. External notifications use custom-message provenance and
 authorize new tasks, publication, deployment or broader credentials. Automatic mode is
 an explicit scheduling choice, not authorization to execute message contents.
 
-UI keys: **↑/↓** or **j/k** select (or scroll an expanded body), **Enter/Space**
-expand/collapse, **h** switch saved history/current queue, **Esc** collapse/back or
-close, **q/Ctrl+C** close immediately. The focused overlay is at most 18 rows and
-shrinks on small terminals; closing it returns to Pi's editor. Use the keyboard in
-both regular and fullscreen Pi modes; no mouse-click behavior is claimed.
+Inline controls use Pi's public shortcut API: **Ctrl+Alt+M** expand/fold,
+**Ctrl+Alt+↑/↓** select, **Ctrl+Alt+D** open selected details. Plain arrows,
+letters, Enter and Space remain editor input. Commands provide a fallback for
+terminals that cannot distinguish modified keys: `/msg ui expand`, `/msg fold`,
+`/msg up`, `/msg down`, `/msg history` (toggle saved history), `/msg details`.
+Only explicit details opens a focused overlay, capped at 72 columns and ten rows
+(and half the terminal height). There, **↑/↓** or **j/k** scroll/select,
+**Enter/Space** fold/open, **h** switches history, **Esc** folds/back/closes,
+**q/Ctrl+C** closes immediately. No mouse-click behavior is claimed. Local tests
+exercise command/shortcut contracts and bounded rendering; these are not a
+human visual/focus check in a real terminal.
 
 The queue redraws on delivery/lease events and keeps selection by message ID when
 new messages arrive. Locally completed deliveries disappear from the current queue;
