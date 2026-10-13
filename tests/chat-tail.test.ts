@@ -7,19 +7,22 @@ function record(id: string, second: number, outbound = false): ConversationDeliv
   const receivedAt = new Date(Date.UTC(2026, 9, 13, 1, 0, second)).toISOString();
   return { message: { id, from: outbound ? '@owner#main' : '@owner#worker', to: outbound ? '@owner#worker' : '@owner#main', message: 'private body ' + id, created_at: '2000-01-01T00:00:00Z' }, metadata: { kind: 'progress', summary: id, requires_action: false }, state: 'pending', attempts: 0, receivedAt, outbound, transport: outbound ? 'sent' : 'received' };
 }
-test('collapsed chat tail follows durable arrivals at bottom and older entries leave only the visible window', () => {
+test('collapsed local first/gap/latest anchors follow arrivals without hiding the oldest', () => {
   const entries = [record('old', 0), record('middle', 1), record('latest', 2, true)];
   entries[0]!.message.created_at = '2099-01-01T00:00:00Z';
   const queue = new InlineQueue(); const view = { channel: 'main', deliveries: entries, listener: 'live' };
   const before = JSON.stringify(entries);
   let lines = queue.render(view, 180, 30);
-  assert.ok(!lines.slice(1).join('\n').includes('old'));
-  assert.ok(lines[1]?.includes('middle')); assert.ok(lines[2]?.includes('latest') && lines[2]?.includes('sent'));
+  assert.ok(lines[1]?.includes('old'));
+  assert.ok(lines[2]?.includes('1 middle records omitted'));
+  assert.ok(lines[3]?.includes('latest') && lines[3]?.includes('sent'));
   assert.equal(JSON.stringify(entries), before, 'render does not reorder/mutate original records');
   entries.push(record('new-arrival', 3));
   lines = queue.render(view, 180, 30);
-  assert.ok(lines[1]?.includes('latest')); assert.ok(lines[2]?.includes('new-arrival'));
-  assert.ok(!lines.slice(1).join('\n').includes('middle'));
+  assert.ok(lines[1]?.includes('old'));
+  assert.ok(lines[2]?.includes('2 middle records omitted'));
+  assert.ok(lines[3]?.includes('new-arrival'));
+  assert.ok(!lines.slice(1).join('\n').includes('latest'));
   assert.equal(entries.length, 4, 'old records remain persisted, not completed or removed');
   assert.deepEqual(conversationItems(entries).map(d => d.message.id), ['old', 'middle', 'latest', 'new-arrival']);
   assert.deepEqual(queue.render(view, 180, 30), lines, 'duplicate redraw does not change order');
@@ -44,6 +47,7 @@ test('expanded old page remains anchored, counts new records once, and bottom/fo
   assert.equal(queue.selected(entries)?.message.id, 'arrival-c', 'bottom resumes automatic follow');
   queue.move(entries, -10); queue.expanded = false;
   lines = queue.render(view, 180, 24);
-  assert.ok(lines[2]?.includes('arrival-c'), 'fold returns to latest tail');
+  assert.ok(lines[1]?.includes('entry-0'));
+  assert.ok(lines[3]?.includes('arrival-c'), 'fold returns to first/gap/latest anchors');
   assert.ok(entries.every(d => d.state === 'pending' && d.attempts === 0), 'navigation is not task completion');
 });

@@ -20,7 +20,7 @@ test('common-prefix mailboxes remain complete before summaries; same owner is ex
     assert.ok(text.includes('owner @lightjunction'));
     assert.ok(text.includes('#iteration-resilience-pi-1013'));
     assert.ok(text.includes('#iteration-resilience-cli-1013'));
-    assert.ok(text.includes('+1 other entries'));
+    assert.ok(text.includes('Latest of 2 local records needs'), 'height-limited newest endpoint is explicitly identified');
     assert.ok(!text.includes('summary can'));
   }
   const text = queue.render(view, 180, 30).join('\n');

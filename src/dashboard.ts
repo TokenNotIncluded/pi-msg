@@ -37,7 +37,7 @@ export function conversationItems(deliveries: Delivery[]): Delivery[] {
   return deliveries.map((delivery, index) => ({ delivery, index }))
     .sort((a, b) => {
       const time = (d: Delivery) => Date.parse(d.receivedAt) || Date.parse(d.message.created_at ?? '') || 0;
-      return time(a.delivery) - time(b.delivery) || a.index - b.index;
+      return time(a.delivery) - time(b.delivery) || (a.delivery.arrivalOrder ?? a.index) - (b.delivery.arrivalOrder ?? b.index);
     }).map(({ delivery }) => delivery);
 }
 /** Sender left, recipient right, summary in the middle; routing labels are not identities. */
@@ -79,6 +79,21 @@ function boundedRows(items: Delivery[], width: number, budget: number, selectedI
   if (block.length + others.length <= budget) return [...block, ...others];
   return [fit(`${viewKey(chosen) === selectedId ? '› ' : ''}Addresses need details (${total} entries) · Ctrl+Alt+D /msg details`, width, presentation.theme)];
 }
+/** First and last are anchors in the retained local range, never remote-wide history. */
+function collapsedRecords(items: Delivery[], width: number, budget: number, labels: ReadonlyMap<string, string> | undefined, presentation: QueuePresentation): string[] {
+  if (budget < 1 || !items.length) return [];
+  const oldest = items[0]!; const latest = items[items.length - 1]!;
+  const block = (d: Delivery) => visibleWidth(`  ${transportMarker(presentation.remote)} ${displayHandle(d.message.from, labels)} → ${displayHandle(d.message.to, labels)}`) <= width
+    ? [queueRow(d, width, d === latest, labels, presentation)] : queueBlock(d, width, d === latest, presentation);
+  const first = block(oldest); const last = oldest === latest ? [] : block(latest);
+  const gap = items.length > 2 ? [`⋯ ${items.length - 2} middle records omitted · /msg history`] : [];
+  const full = [...first, ...gap, ...last];
+  if (full.length <= budget) return full;
+  // Keep the oldest identity when possible, but explicitly identify the missing
+  // endpoint. Never silently show a tail-only window or truncated mailbox prefix.
+  if (items.length > 1 && first.length + gap.length + 1 <= budget) return [...first, ...gap, `Latest of ${items.length} local records needs /msg details; expand /msg history`];
+  return [fit(`First/latest need expanded history (${items.length} local records) · /msg history /msg details`, width, presentation.theme)];
+}
 export function nextHint(d: Delivery): string {
   if (d.outbound) return d.transport === 'sent' ? 'Sent: saved transport receipt, not proof of reading or task completion.' : 'Send pending/failed: retry msg_send with the same ID, recipient and body. Not sent until a saved receipt.';
   if (d.state === 'completed') return 'Completed locally; viewing is not a server receipt.';
@@ -94,9 +109,9 @@ export function queueLines(deliveries: Delivery[], state: string, width: number,
   const items = (presentation.tasks ? queueItems(deliveries) : conversationItems(deliveries)).filter(d => !presentation.transportOnly || communicationPending(d));
   const claimed = items.filter(d => !d.outbound && d.state === 'claimed').length;
   const deferred = items.filter(d => !d.outbound && d.deferred).length;
-  const tail = presentation.tasks ? items : items.slice(-Math.min(2, Math.max(0, budget - 1)));
-  const rows = boundedRows(tail, width, Math.max(0, budget - 1), !presentation.tasks && tail.length ? viewKey(tail[tail.length - 1]!) : undefined, labels, presentation, items.length);
-  const simple = rows.every(row => row.includes(' → '));
+  const rows = presentation.tasks ? boundedRows(items, width, Math.max(0, budget - 1), undefined, labels, presentation)
+    : collapsedRecords(items, width, Math.max(0, budget - 1), labels, presentation);
+  const simple = presentation.tasks && rows.every(row => row.includes(' → '));
   const summary = presentation.tasks ? `${items.length} task pending · ${claimed} claimed${deferred ? ` · ${deferred} deferred` : ''}` : `${items.length} conversation records · ${items.filter(communicationPending).length} send pending`;
   return [`MSG ${transportMarker(presentation.remote)} ${clean(state, 24)} · ${summary} · /msg history /msg tasks`, ...(simple ? rows.slice(0, 2) : rows)]
     .map(line => fit(line, width, presentation.theme));

@@ -73,7 +73,7 @@ else setInterval(()=>console.log('{}'),50);
       if (state.total === 100 && (candidateMode === 'manual' || wakes.length > 0)) break;
       await sleep(20);
     }
-    assert.ok(widget); assert.equal(widget().render(120).length, 3);
+    assert.ok(widget); assert.equal(widget().render(120).length, 4);
     const journal = (await (tools.get('msg_inbox') as { execute: (id: string, args: object) => Promise<unknown> }).execute('before', {}));
     await commandHandler!('ui', context);
     assert.equal(customCalls, 0, '/msg ui must not invoke custom or capture focus');
@@ -81,7 +81,7 @@ else setInterval(()=>console.log('{}'),50);
     assert.ok(widget!().render(180).some(line => line.includes('conversation records')));
     assert.equal('handleInput' in widget!(), false, 'widget itself never owns plain input');
     await commandHandler!('', context);
-    assert.equal(widget!().render(180).length, 3, '/msg toggles back to compact strip');
+    assert.equal(widget!().render(180).length, 4, '/msg toggles back to compact first/gap/latest strip');
     assert.deepEqual([...shortcuts.keys()].sort(), ['ctrl+alt+d', 'ctrl+alt+down', 'ctrl+alt+m', 'ctrl+alt+up']);
     await shortcuts.get('ctrl+alt+m')!.handler(context);
     await shortcuts.get('ctrl+alt+up')!.handler(context);
@@ -202,7 +202,9 @@ else setInterval(()=>console.log('{}'),50);
     writeFileSync(join(dir, 'new-arrivals.json'), JSON.stringify(arrivals));
     for (let i = 0; i < 100 && !widget!().render(180).join('\n').includes('live-b'); i++) await sleep(20);
     const tail = widget!().render(180);
-    assert.ok(tail[1]?.includes('live-a')); assert.ok(tail[2]?.includes('live-b'), 'listener hint reconciles into refreshed widget with latest arrival at bottom despite old sender timestamp');
+    assert.ok(tail[1]?.includes('worker0'), 'oldest local anchor stays visible');
+    assert.ok(tail[2]?.includes('102 middle records omitted'));
+    assert.ok(tail[3]?.includes('live-b'), 'listener hint reconciles into refreshed widget with latest arrival at bottom despite old sender timestamp');
     await sleep(120); // Repeated listener hints return the same IDs.
     assert.deepEqual(widget!().render(180), tail, 'duplicate hints neither duplicate nor reorder tail records');
     assert.equal((await readState()).state, 'pending', 'arrival refresh does not complete independent work');

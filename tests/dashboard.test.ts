@@ -86,7 +86,7 @@ test('inline queue is bounded, selection survives arrivals, and completion/histo
   const queue = new InlineQueue();
   const view = { channel: 'main', deliveries: entries, listener: 'live', remote: false };
   const before = JSON.stringify(entries);
-  assert.equal(queue.render(view, 80).length, 3);
+  assert.equal(queue.render(view, 80).length, 4);
   queue.expanded = true;
   queue.move(entries, -40); // Chat-tail starts at the bottom; move up to read older records.
   const selected = queue.selected(entries)!.message.id;

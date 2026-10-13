@@ -28,7 +28,7 @@ export interface Metadata {
 }
 export interface Delivery {
   message: Message; metadata: Metadata; state: 'pending' | 'claimed' | 'completed';
-  attempts: number; receivedAt: string; leaseUntil?: number; token?: string; error?: string;
+  attempts: number; receivedAt: string; arrivalOrder?: number; leaseUntil?: number; token?: string; error?: string;
   deferred?: boolean;
   /** Pi queue acceptance/observation is not delivery completion. */
   notification?: { phase: 'queued' | 'observed' | 'recoverable'; attempt: number };
@@ -106,20 +106,25 @@ export class Store {
   constructor(readonly config: Config, readonly directory = join(stateRoot(), binding(config))) {
     privateDir(directory); this.path = join(directory, 'journal.json'); checkFile(this.path);
     this.journal = existsSync(this.path) ? JSON.parse(readFileSync(this.path, 'utf8')) : { version: 1, binding: binding(config), deliveries: [] };
-    if (this.journal.version !== 1 || this.journal.binding !== binding(config) || !Array.isArray(this.journal.deliveries) || this.journal.deliveries.some(d => !validMessage(d.message) || !['pending', 'claimed', 'completed'].includes(d.state))) throw new Error('Invalid subscription journal');
+    if (this.journal.version !== 1 || this.journal.binding !== binding(config) || !Array.isArray(this.journal.deliveries) || this.journal.deliveries.some(d => !validMessage(d.message) || !['pending', 'claimed', 'completed'].includes(d.state) || (d.arrivalOrder !== undefined && (!Number.isSafeInteger(d.arrivalOrder) || d.arrivalOrder < 0)))) throw new Error('Invalid subscription journal');
+    // Legacy journals acquire a stable local tie-breaker on their next save.
+    // Ingest groups completed tasks first; that storage layout must not move chat anchors.
+    let order = Math.max(-1, ...this.journal.deliveries.map(d => d.arrivalOrder ?? -1)) + 1;
+    for (const d of this.journal.deliveries) if (d.arrivalOrder === undefined) d.arrivalOrder = order++;
   }
   save(): void { atomicJSON(this.path, this.journal); }
   ingest(items: unknown[], cursor: string, stream: 'history' | 'live' = 'history'): number {
     if (typeof cursor !== 'string' || !items.every(validMessage)) throw new Error('Invalid MSG inbox page');
     const seen = new Map(this.journal.deliveries.map(d => [d.message.id, d]));
     const added: Delivery[] = [];
+    let order = Math.max(-1, ...this.journal.deliveries.map(d => d.arrivalOrder ?? -1)) + 1;
     for (const item of items as Message[]) {
       const old = seen.get(item.id);
       if (old) {
         if (old.message.from !== item.from || old.message.to !== item.to || old.message.message !== item.message) throw new Error('MSG message ID conflicts with durable delivery');
         continue;
       }
-      const d: Delivery = { message: item, metadata: metadata(item), state: 'pending', attempts: 0, receivedAt: new Date().toISOString() };
+      const d: Delivery = { message: item, metadata: metadata(item), state: 'pending', attempts: 0, receivedAt: new Date().toISOString(), arrivalOrder: order++ };
       added.push(d); seen.set(item.id, d);
     }
     if (this.pending().length + added.length > this.config.maxPending) throw new Error('Pending quota reached; cursor not advanced. Complete work or increase configured quota.');

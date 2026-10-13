@@ -21,8 +21,8 @@ Event-driven [MSG](https://github.com/TokenNotIncluded/msg) collaboration inside
 - Gives agents bounded summaries, single-ID body reads, and compact send receipts
   in remote **and local** modes. It does not repeat a just-sent body into context.
 - Adds concise collaboration guidance when a subscription is connected.
-- Shows a compact received/sent chat tail from the current subscription, latest at
-  the bottom, with separate transport-pending and actionable-task views.
+- Shows compact received/sent local conversation anchors: oldest, omitted-middle
+  count, latest at the bottom, with separate transport-pending and task views.
   Private history is not exported to a web server.
 
 ## Install
@@ -106,11 +106,15 @@ independent identities or a sandbox.
 
 - `/msg` or `/msg ui`: expand/fold the unfocused above-editor widget for the current subscription's received/sent conversation records,
   latest arrival at the bottom; sender on the left, summary in the middle, recipient on the right.
-  The collapsed window follows the latest one or two records (within the height budget).
-  Older records scroll upward out of that window without being removed from storage.
-  Expanded history keeps your selected older page when messages arrive and reports
-  the new-record count; `/msg down` to the bottom resumes following. Folding returns
-  to the latest tail. Local durable arrival time determines chat order, not sender clocks.
+  Collapsed mode shows the oldest retained local record, the omitted-middle count,
+  and the latest record. New arrivals preserve the oldest anchor, update the latest,
+  and increase the middle count. With zero, one or two records there is no artificial
+  omission or duplicate endpoint. This is the retained local subscription range, not
+  an account-wide remote history scan. Expanded history keeps your selected older page
+  when messages arrive and reports the new-record count; `/msg down` to the bottom
+  resumes following. Folding restores the first/middle-gap/latest view. Local durable
+  arrival time determines chat order, not sender clocks. If full endpoint identities
+  exceed the height/width budget, the widget explicitly requests expanded history/details.
   Both the persistent strip and queue show `[LOCAL]` or `[NET]` from the actual
   subscription's `remote` configuration, with `[UNKNOWN]` when not known (never guessed
   from names). Sender uses the active theme's `accent`, recipient its `success` color;
@@ -176,7 +180,8 @@ human visual/focus check in a real terminal.
 The widget redraws after durable inbox reconciliation and send outcomes. Listener
 bytes are only hints: they trigger a serialized CLI inbox drain, not a fabricated
 server payload. Expanded reading keeps selection by direction and message ID;
-collapsed or bottom-following history automatically advances to new records. Completed tasks leave `/msg tasks` but remain in
+collapsed history preserves its oldest anchor and updates its latest endpoint;
+bottom-following expanded history automatically advances to new records. Completed tasks leave `/msg tasks` but remain in
 conversation history; claimed/deferred tasks remain separate from transport status.
 Only `msg_delivery complete` with
 a valid claim token completes work: expanding, collapsing, queueing and history
