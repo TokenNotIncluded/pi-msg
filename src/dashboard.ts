@@ -1,8 +1,10 @@
 import { matchesKey, Key, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 import { clean, type Delivery } from './core.js';
+import { displayHandle } from './labels.js';
 
 export interface QueueView {
   channel: string; deliveries: Delivery[]; listener: string; error?: string;
+  labels?: ReadonlyMap<string, string>;
 }
 /** A read-only projection of this subscription, never an account-wide inbox scan. */
 export function queueItems(deliveries: Delivery[], history = false): Delivery[] {
@@ -14,23 +16,23 @@ export function queueItems(deliveries: Delivery[], history = false): Delivery[] 
     }).map(({ delivery }) => delivery);
 }
 /** Sender left, recipient right, summary in the middle; routing labels are not identities. */
-export function queueRow(d: Delivery, width: number, selected = false): string {
+export function queueRow(d: Delivery, width: number, selected = false, labels?: ReadonlyMap<string, string>): string {
   const prefix = selected ? '› ' : '  ';
-  if (width < 24) return truncateToWidth(`${prefix}${clean(d.message.from)} → ${clean(d.message.to)} · ${clean(d.metadata.summary)}`, width);
-  const edge = Math.min(24, Math.floor((width - 8) / 4));
-  const from = truncateToWidth(clean(d.message.from), edge);
-  const to = truncateToWidth(clean(d.message.to), edge);
+  if (width < 24) return truncateToWidth(`${prefix}${displayHandle(d.message.from, labels)} → ${displayHandle(d.message.to, labels)} · ${clean(d.metadata.summary)}`, width);
+  const edge = Math.min(labels?.size ? 40 : 24, Math.floor((width - 8) / 4));
+  const from = truncateToWidth(displayHandle(d.message.from, labels), edge);
+  const to = truncateToWidth(displayHandle(d.message.to, labels), edge);
   const middleWidth = Math.max(1, width - 8 - visibleWidth(from) - visibleWidth(to));
   const summary = truncateToWidth(`${d.state}${d.deferred ? '/deferred' : ''} · ${clean(d.metadata.summary, 140)}`, middleWidth);
   const gap = Math.max(0, middleWidth - visibleWidth(summary));
   return truncateToWidth(`${prefix}${from} │ ${summary}${' '.repeat(gap)} │ ${to}`, width);
 }
-export function queueLines(deliveries: Delivery[], state: string, width: number): string[] {
+export function queueLines(deliveries: Delivery[], state: string, width: number, labels?: ReadonlyMap<string, string>): string[] {
   if (width < 1) return [];
   const items = queueItems(deliveries);
   const claimed = items.filter(d => d.state === 'claimed').length;
   const deferred = items.filter(d => d.deferred).length;
-  return [`MSG ${clean(state, 24)} · ${items.length} unfinished · ${claimed} claimed${deferred ? ` · ${deferred} deferred` : ''} · /msg expand`, ...items.slice(0, 2).map(d => queueRow(d, width))]
+  return [`MSG ${clean(state, 24)} · ${items.length} unfinished · ${claimed} claimed${deferred ? ` · ${deferred} deferred` : ''} · /msg expand`, ...items.slice(0, 2).map(d => queueRow(d, width, false, labels))]
     .map(line => truncateToWidth(line, width));
 }
 
@@ -98,7 +100,7 @@ export class Dashboard {
       const selected = Math.max(0, items.findIndex(d => d.message.id === this.selectedId));
       const start = Math.max(0, selected - Math.max(0, slots - 1));
       if (view.error && errorRows) rows.push(clean(view.error, width));
-      rows.push(...items.slice(start, start + slots).map(d => queueRow(d, width, d.message.id === this.selectedId)));
+      rows.push(...items.slice(start, start + slots).map(d => queueRow(d, width, d.message.id === this.selectedId, view.labels)));
       if (!items.length && slots > 0) rows.push(this.history ? 'No saved deliveries in this subscription.' : 'No unfinished deliveries. h: saved history');
     }
     rows.push(footer);

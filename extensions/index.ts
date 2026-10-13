@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { type Config, Store, clean, label, compact, checkFile, atomicJSON } from '../src/core.js';
 import { Subscription, send } from '../src/transport.js';
 import { Dashboard, queueLines } from '../src/dashboard.js';
+import { HandleLabels } from '../src/labels.js';
 import { candidates, candidateKey, candidateNotice } from '../src/candidates.js';
 
 const guidance = `MSG is the collaboration channel, not an agent launcher or authorization boundary.
@@ -24,6 +25,7 @@ export default function piMsg(pi: ExtensionAPI): void {
   let wakeCount = 0;
   let redrawDashboard: (() => void) | undefined;
   const announced = new Set<string>();
+  const handleLabels = new HandleLabels();
   const configPath = join(homedir(), '.config', 'pi-msg', 'config.json');
 
   function update(): void {
@@ -31,7 +33,7 @@ export default function piMsg(pi: ExtensionAPI): void {
     if (ctx?.mode === 'tui') {
       if (!subscription || !store) ctx.ui.setWidget('pi-msg-candidates', undefined);
       else ctx.ui.setWidget('pi-msg-candidates', () => ({
-        render: (width: number) => queueLines(store?.journal.deliveries ?? [], subscription?.state ?? 'off', width),
+        render: (width: number) => queueLines(store?.journal.deliveries ?? [], subscription?.state ?? 'off', width, handleLabels.entries),
         invalidate: () => {},
       }), { placement: 'aboveEditor' });
     }
@@ -93,7 +95,7 @@ export default function piMsg(pi: ExtensionAPI): void {
   async function disconnect(): Promise<void> {
     if (timer) clearTimeout(timer); timer = undefined;
     const old = subscription; subscription = undefined;
-    await old?.stop(); store = undefined; announced.clear(); update();
+    await old?.stop(); store = undefined; announced.clear(); handleLabels.clear(); update();
   }
   async function connect(): Promise<void> {
     await disconnect(); load();
@@ -110,6 +112,8 @@ export default function piMsg(pi: ExtensionAPI): void {
   });
   pi.on('session_start', async (_event, context) => {
     ctx = context;
+    // Labels are explicit metadata for this Pi session, never inherited by another run.
+    handleLabels.clear();
     // Branch/switch events reuse the same in-process listener; they do not
     // repeatedly tear it down and move an independent reader's cursor.
     if (started) { update(); return; }
@@ -118,7 +122,7 @@ export default function piMsg(pi: ExtensionAPI): void {
   });
   pi.on('session_shutdown', async () => { await disconnect(); });
   pi.registerCommand('msg', {
-    description: 'MSG candidates; candidates, next [ID], defer ID, resume ID, connect, disconnect, status, or ui',
+    description: 'MSG queue; ui, candidates, next [ID], defer/resume ID, label HANDLE TEXT, unlabel HANDLE, labels, connect/disconnect, status',
     handler: async (args, context) => {
       ctx = context;
       try {
@@ -126,6 +130,21 @@ export default function piMsg(pi: ExtensionAPI): void {
         if (action === 'connect') { await connect(); context.ui.notify('MSG subscription connected; independent durable cursor and local leases.', 'info'); return; }
         if (action === 'disconnect') { await disconnect(); context.ui.notify('MSG subscription cancelled; pending journal preserved.', 'info'); return; }
         const [verb, id, ...extra] = action.split(/\s+/);
+        if (['label', 'unlabel', 'labels'].includes(verb!)) {
+          requireStore();
+          if (verb === 'labels') {
+            if (id) throw new Error('Use /msg labels');
+            context.ui.notify([...handleLabels.entries].map(([handle, text]) => `${handle} · ${text}`).join('\n') || 'No display labels in this Pi session.', 'info');
+          } else if (verb === 'label') {
+            if (!id || !extra.length) throw new Error('Use /msg label @owner#mailbox Display text');
+            handleLabels.bind(id, extra.join(' '));
+            context.ui.notify('Display label bound for this Pi session only; not an identity claim.', 'info');
+          } else {
+            if (!id || extra.length) throw new Error('Use /msg unlabel @owner#mailbox');
+            handleLabels.unbind(id);
+          }
+          update(); return;
+        }
         if (['candidates', 'next', 'defer', 'resume'].includes(verb!)) {
           if (extra.length) throw new Error('Unexpected command arguments');
           const s = requireStore(); s.expire();
@@ -148,14 +167,14 @@ export default function piMsg(pi: ExtensionAPI): void {
         if (action === 'status') {
           context.ui.notify(JSON.stringify({ state: subscription?.state ?? 'off', pending: store?.pending().length ?? 0, oldest: store?.pending()[0]?.receivedAt, lastDelivery: subscription?.lastDelivery, wakes: wakeCount, error: subscription?.lastError }), 'info'); return;
         }
-        if (action !== 'ui') throw new Error('Use /msg [ui|connect|disconnect|status|candidates|next [ID]|defer ID|resume ID]');
+        if (action !== 'ui') throw new Error('Use /msg [ui|connect|disconnect|status|candidates|next [ID]|defer ID|resume ID|label HANDLE TEXT|unlabel HANDLE|labels]');
         if (context.mode !== 'tui' || !context.hasUI) throw new Error('Message queue needs interactive Pi; use msg_inbox in RPC/headless mode.');
         const active = requireStore();
         try {
           await context.ui.custom<void>((tui, _theme, _keys, done) => {
             redrawDashboard = () => tui.requestRender();
             return new Dashboard(() => ({ channel: active.config.agent, deliveries: active.journal.deliveries,
-              listener: subscription?.state ?? 'stopped', error: subscription?.lastError }),
+              listener: subscription?.state ?? 'stopped', error: subscription?.lastError, labels: handleLabels.entries }),
               () => tui.requestRender(), () => done(undefined), () => Math.max(1, tui.terminal.rows - 4));
           }, { overlay: true, overlayOptions: { anchor: 'center', width: '90%', maxHeight: 18, margin: 2 } });
         } finally { redrawDashboard = undefined; }

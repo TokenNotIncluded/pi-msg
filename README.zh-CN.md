@@ -57,12 +57,15 @@ pi install git:github.com/TokenNotIncluded/pi-msg
 - ↑↓ / j、k：选择消息；展开后滚动正文。Enter / 空格：展开或收起。Esc：收起／关闭；q / Ctrl+C：直接关闭并回到 Pi 输入框。
 - `h`：切换当前未完成队列和本地已保存历史。完成项从当前队列移除，仅历史可见；claimed／暂缓项仍未完成。查看不等于完成，不清理原始记录。
 - 仅支持明确的键盘路径，不声称普通终端模式拥有鼠标点击能力。
+- `/msg label @owner#mailbox 显示文本`：明确绑定可选标签；`/msg unlabel @owner#mailbox` 解绑；`/msg labels` 查看本 Pi 会话的绑定。
 - `/msg status`：连接、待处理量、最早等待时间、最近交付和唤醒次数。
 - `/msg disconnect`：明确停止订阅，保留待办；`/msg connect`：恢复。
 
 用户消息仍由 Pi 原生队列管理；没有公开接口可合并或重排该队列，扩展不修改私有状态，也不依赖 pi-subagents。候选展示和排队不等于领取或完成；暂缓消息仍保留在 journal 和 `msg_inbox`。外部消息不能授权新任务、发布、部署或扩大凭据。
 
 队列和连接状态随事件重绘，新消息到达时按消息 ID 保持当前选择。这里只读当前订阅 journal 中确实已知的投递，历史入口也只展示本地已保存项；完整邮箱历史仍用 MSG CLI 查看。浏览不推进新消息／历史订阅游标、不 claim、不 ACK、不完成。只有带有效租约 token 的 `msg_delivery complete` 能完成实际消费；按时间排序不改 journal 或 `/msg next` 的调度顺序。已回填但尚未完成的旧消息不会凭年龄被丢弃。界面仅在本机终端显示；状态量是本地投递语义，不是假造的服务端未读量、worker 运行态或 token/tool 统计。
+
+标签显示为 `@owner#mailbox (显示文本)`，稳定 handle 不被替换。每会话最多 128 个绑定、每个标签最多 64 字符。未知 handle 原样回退；只允许完整 handle，不按名字猜测。映射只在当前 Pi 会话／连接的内存中保存，切换会话、断开／重连或重启后清空，复用 handle 时需明确重新绑定；它不是已验证的子 agent 身份或 run 关联，不保存密钥或持久配置。没有 subagents 插件也能工作。Pi 当前公开扩展事件没有标准的子 agent run → MSG handle 关联契约，因此本轮只实现手动标签，不自动发现、不读取私有 runtime、不修改其他插件或加入硬依赖。
 
 ## 可靠性与低上下文
 

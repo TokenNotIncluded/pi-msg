@@ -61,6 +61,15 @@ else setInterval(()=>{},1000);
     assert.deepEqual(await (tools.get('msg_inbox') as { execute: (id: string, args: object) => Promise<unknown> }).execute('after', {}), journal, 'viewing does not mutate deliveries');
     await commandHandler!('ui', { ...context, mode: 'rpc' });
     assert.equal(customCalls, 1, 'RPC must not open a terminal component');
+    await commandHandler!('label @test#worker99 reviewer', context);
+    assert.ok(widget!().render(180).some(line => line.includes('@test#worker99 (reviewer)')));
+    await commandHandler!('unlabel @test#worker99', context);
+    assert.ok(widget!().render(180).every(line => !line.includes('(reviewer)')));
+    await commandHandler!('label @test#worker99 reviewer', context);
+    await handlers.get('session_start')!({}, context);
+    assert.ok(widget!().render(180).every(line => !line.includes('(reviewer)')), 'new Pi session event cannot inherit a same-name worker mapping');
+    await commandHandler!('labels', context);
+    assert.ok(notifications.at(-1)?.includes('No display labels'));
     if (candidateMode === 'manual') {
       assert.equal(wakes.length, 0, 'arrivals never start model work in manual mode');
       await commandHandler!('defer id0', context);

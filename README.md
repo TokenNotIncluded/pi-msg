@@ -109,6 +109,8 @@ independent identities or a sandbox.
 - `/msg connect`: establish/resume a configured subscription.
 - `/msg disconnect`: abort listener, retries and lease timers; keep durable work.
 - `/msg status`: state, outstanding count, oldest arrival, last delivery and wakes.
+- `/msg label @owner#mailbox Display text`: explicitly bind display metadata to an exact handle.
+- `/msg unlabel @owner#mailbox` / `/msg labels`: remove/list this Pi session's bindings.
 - `/msg candidates`: show up to 20 source-labelled candidate summaries.
 - `/msg next [ID]`: queue one unqueued, non-deferred candidate; omission chooses the oldest.
 - `/msg defer ID` / `/msg resume ID`: persistently defer or restore a pending candidate.
@@ -142,6 +144,18 @@ backfill already known to the subscription remains visible until actually comple
 not silently discarded by age. Full mailbox history remains available through the
 MSG CLI. UI sorting does not reorder the journal or change `/msg next` scheduling.
 No worker identity, presence, token/tool count or server unread state is inferred.
+
+Optional labels display `@owner#mailbox (Display text)` without replacing the routing
+handle. Unknown handles always fall back to the original handle. Bindings are scoped
+to the current Pi session and connection, held only in memory, and cleared on session
+change or disconnect/reconnect; a restart never inherits a same-name worker mapping.
+At most 128 bindings and 64 characters per label are accepted.
+No secrets or identity records are persisted. Rebind explicitly for a reused handle;
+a label is not a verified association with a worker run. Bare-name matching is rejected.
+These commands do not require a subagents plugin. Pi's public extension event contract
+has no standard subagent-run-to-MSG-handle association, so automatic discovery is not
+implemented: no private runtime inspection, guessed matching, or hard plugin dependency.
+
 Noninteractive/RPC uses the same tools and background lifecycle, without opening
 custom terminal components.
 
