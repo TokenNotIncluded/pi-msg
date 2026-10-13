@@ -8,7 +8,7 @@ function delivery(id: string, state: Delivery['state'] = 'pending', created = '2
   return { message: { id, from: '@user#sender', to: '@user#receiver', created_at: created, message: `PRIVATE-BODY-${id}\nsecond line\n\x1b[2J第三行` },
     metadata: { kind: 'task', summary: `summary ${id} 中文 🐱`, requires_action: true }, state, attempts: 0, receivedAt: created };
 }
-test('queue is newest-first; claimed/deferred remain and completed only appears in explicit history', () => {
+test('conversation is newest-first regardless of task completion; task projection stays separate', () => {
   const old = delivery('old'); const newest = delivery('new', 'claimed', '2026-10-13T03:00:00Z');
   old.deferred = true;
   const done = delivery('done', 'completed', '2026-10-13T02:00:00Z');
@@ -16,7 +16,10 @@ test('queue is newest-first; claimed/deferred remain and completed only appears 
   assert.deepEqual(queueItems(entries).map(d => d.message.id), ['new', 'old']);
   assert.deepEqual(queueItems(entries, true).map(d => d.message.id), ['new', 'done', 'old']);
   assert.equal(JSON.stringify(entries), original, 'sorting never mutates journal');
-  const lines = queueLines(entries, 'live', 180);
+  const records = queueLines(entries, 'live', 180);
+  assert.ok(records[0]?.includes('3 conversation records'));
+  assert.ok(records[0]?.includes('0 send pending'));
+  const lines = queueLines(entries, 'live', 180, undefined, { tasks: true });
   assert.ok(lines[0]?.includes('1 claimed')); assert.ok(lines[0]?.includes('1 deferred'));
   assert.ok(lines[1]?.includes('summary new')); assert.ok(!lines.join('\n').includes('PRIVATE-BODY'));
 });
@@ -48,10 +51,11 @@ test('160 entries remain navigable with selection/footer visible on small screen
     }
   }
 });
-test('expand/collapse preserves lines; viewing never changes delivery and completion removes it live', () => {
+test('expand/collapse is read-only; completion removes a task but retains conversation', () => {
   const d = delivery('selected', 'claimed'); const done = delivery('done', 'completed');
   const entries = [done, d]; const before = JSON.stringify(entries); let closed = 0;
   const dashboard = new Dashboard(() => ({ channel: 'main', deliveries: entries, listener: 'live' }), () => {}, () => closed++);
+  dashboard.handleInput('h'); // Explicit task-only view.
   assert.ok(!dashboard.render(100).join('\n').includes('PRIVATE-BODY'));
   dashboard.handleInput('\r');
   const body = dashboard.render(100);
@@ -61,8 +65,8 @@ test('expand/collapse preserves lines; viewing never changes delivery and comple
   assert.equal(JSON.stringify(entries), before);
   dashboard.handleInput(' '); assert.ok(!dashboard.render(100).join('\n').includes('PRIVATE-BODY'));
   dashboard.handleInput('\r'); d.state = 'completed';
-  assert.ok(dashboard.render(100).some(line => line.includes('No unfinished')));
-  dashboard.handleInput('h'); assert.ok(dashboard.render(100).some(line => line.includes('saved history (2)')));
+  assert.ok(dashboard.render(100).some(line => line.includes('No pending tasks')));
+  dashboard.handleInput('h'); assert.ok(dashboard.render(100).some(line => line.includes('conversation records (2)')));
   dashboard.handleInput('\r'); assert.ok(dashboard.render(100).some(line => line.includes('PRIVATE-BODY')));
   dashboard.handleInput('\x1b'); dashboard.handleInput('h'); dashboard.handleInput('\x1b');
   assert.equal(closed, 1); dashboard.handleInput('\r'); assert.deepEqual(dashboard.render(100), []);
@@ -97,10 +101,12 @@ test('inline queue is bounded, selection survives arrivals, and completion/histo
   }
   entries.pop(); assert.equal(JSON.stringify(entries), before);
   queue.selected(entries)!.state = 'completed';
-  assert.notEqual(queue.selected(entries)!.message.id, selected);
+  assert.equal(queue.selected(entries)!.message.id, selected, 'transport record survives task completion');
+  queue.history = false;
+  assert.notEqual(queue.selected(entries)!.message.id, selected, 'task queue excludes completed');
   queue.history = true;
   assert.equal(queueItems(entries, true).length, 160);
-  queue.reset(); assert.equal(queue.expanded, false); assert.equal(queue.history, false);
+  queue.reset(); assert.equal(queue.expanded, false); assert.equal(queue.history, true);
 });
 
 test('empty and very short terminals are bounded', () => {

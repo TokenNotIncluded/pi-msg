@@ -156,7 +156,7 @@ export class Subscription {
     this.unlock?.(); this.unlock = undefined; this.state = 'stopped'; this.onState();
   }
 }
-export async function send(config: Config, directory: string, to: string, body: string, id: string): Promise<{ id: string; to: string; status: string; resource?: unknown; path?: unknown }> {
+export async function send(config: Config, directory: string, to: string, body: string, id: string): Promise<{ id: string; to: string; status: string; from?: string; resource?: unknown; path?: unknown }> {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new Error('Message ID must match MSG retry-safe ID syntax');
   if (Buffer.byteLength(body) > 65536) throw new Error('Message exceeds 64 KiB');
   privateDir(directory);
@@ -165,6 +165,6 @@ export async function send(config: Config, directory: string, to: string, body: 
   try {
     const result = await command(config, ['agent', 'send', to, '--file', path, '--message-id', id, ...(config.remote ? ['--remote', '--receipt'] : [])]) as Record<string, unknown>;
     // Local MSG has no native receipt yet; discard its body in this adapter.
-    return { id, to, status: 'saved', ...(config.remote ? { resource: result.resource, path: result.path } : {}) };
+    return { id, to, status: 'saved', ...(typeof result.from === 'string' ? { from: result.from } : {}), ...(config.remote ? { resource: result.resource, path: result.path } : {}) };
   } finally { unlinkSync(path); }
 }

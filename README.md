@@ -21,8 +21,8 @@ Event-driven [MSG](https://github.com/TokenNotIncluded/msg) collaboration inside
 - Gives agents bounded summaries, single-ID body reads, and compact send receipts
   in remote **and local** modes. It does not repeat a just-sent body into context.
 - Adds concise collaboration guidance when a subscription is connected.
-- Shows a compact newest-first point-to-point message queue from the current
-  subscription's saved deliveries, with keyboard expansion and a separate history view.
+- Shows compact newest-first received/sent conversation records from the current
+  subscription, with separate transport-pending and actionable-task views.
   Private history is not exported to a web server.
 
 ## Install
@@ -104,7 +104,7 @@ independent identities or a sandbox.
 
 ## User controls and UI
 
-- `/msg` or `/msg ui`: expand/fold the unfocused above-editor widget for the current subscription's unfinished message queue,
+- `/msg` or `/msg ui`: expand/fold the unfocused above-editor widget for the current subscription's received/sent conversation records,
   newest first; sender on the left, summary in the middle, recipient on the right.
   Both the persistent strip and queue show `[LOCAL]` or `[NET]` from the actual
   subscription's `remote` configuration, with `[UNKNOWN]` when not known (never guessed
@@ -114,7 +114,11 @@ independent identities or a sandbox.
   on narrow terminals. Very narrow widths may truncate names or the marker.
 - `/msg connect`: establish/resume a configured subscription.
 - `/msg disconnect`: abort listener, retries and lease timers; keep durable work.
-- `/msg status`: state, outstanding count, oldest arrival, last delivery and wakes.
+- `/msg status`: listener state, received records, send-pending count, task candidates,
+  independent adapter delivery-pending count, oldest arrival, last delivery and wakes.
+- `/msg history`: show all saved received/sent conversation records (the default).
+- `/msg tasks`: show actionable received tasks that are pending or locally claimed.
+- `/msg pending`: show only sending/failed outbound records; received records are already durable.
 - `/msg label @owner#mailbox Display text`: explicitly bind display metadata to an exact handle.
 - `/msg unlabel @owner#mailbox` / `/msg labels`: remove/list this Pi session's bindings.
 - `/msg candidates`: show up to 20 source-labelled candidate summaries.
@@ -131,9 +135,9 @@ cannot fit the height budget, explicitly request details instead of showing ambi
 mailbox prefixes. Extremely narrow/short terminals cannot show all identities or
 shortcuts; use `/msg details` and scroll the full From/To lines there.
 It never steals editor focus, and
-is cleared on disconnect/shutdown. It shows the newest unfinished messages and local
-claimed/deferred counts. These are adapter delivery states, not server unread counts
-or worker runtime statistics.
+is cleared on disconnect/shutdown. The default shows received/sent communication,
+not unfinished work. The task view shows local claimed/deferred counts; these are
+adapter states, not server unread counts or worker runtime statistics.
 Queueing does not claim or complete a delivery. Deferred work stays in the journal and
 `msg_inbox`. User messages remain in Pi's native queue: no public extension API merges
 or reorders that queue. External notifications use custom-message provenance and cannot
@@ -156,24 +160,28 @@ Inline controls use Pi's public shortcut API: **Ctrl+Alt+M** expand/fold,
 **Ctrl+Alt+↑/↓** select, **Ctrl+Alt+D** open selected details. Plain arrows,
 letters, Enter and Space remain editor input. Commands provide a fallback for
 terminals that cannot distinguish modified keys: `/msg ui expand`, `/msg fold`,
-`/msg up`, `/msg down`, `/msg history` (toggle saved history), `/msg details`.
+`/msg up`, `/msg down`, `/msg history`, `/msg tasks`, `/msg pending`, `/msg details`.
 Only explicit details opens a focused overlay, capped at 72 columns and ten rows
 (and half the terminal height). There, **↑/↓** or **j/k** scroll/select,
-**Enter/Space** fold/open, **h** switches history, **Esc** folds/back/closes,
+**Enter/Space** fold/open, **h** switches records/tasks, **Esc** folds/back/closes,
 **q/Ctrl+C** closes immediately. No mouse-click behavior is claimed. Local tests
 exercise command/shortcut contracts and bounded rendering; these are not a
 human visual/focus check in a real terminal.
 
-The queue redraws on delivery/lease events and keeps selection by message ID when
-new messages arrive. Locally completed deliveries disappear from the current queue;
-claimed and deferred deliveries remain unfinished. Only `msg_delivery complete` with
+The widget redraws on delivery/lease/send events and keeps selection by direction and
+message ID when new records arrive. Completed tasks leave `/msg tasks` but remain in
+conversation history; claimed/deferred tasks remain separate from transport status.
+Only `msg_delivery complete` with
 a valid claim token completes work: expanding, collapsing, queueing and history
 viewing do not claim, ACK, complete or advance either subscription cursor.
 
-History shows saved deliveries in this subscription, including completed entries;
-it does not enumerate every account mailbox or rescan a live inbox. Historical
-backfill already known to the subscription remains visible until actually completed,
-not silently discarded by age. Full mailbox history remains available through the
+History combines the existing receive journal and retry outbox without copying bodies
+into another database. Durable received entries are marked `received`; a successful
+transport receipt marks outbound entries `sent`, not read or task-completed. Failed or
+interrupted sends remain retryable with their original ID, recipient and body; saved
+retries return the persisted receipt without another send. Reload waits for active sends
+before releasing the subscription lock. History does not enumerate every account
+mailbox or rescan a live inbox. Existing retained backfill remains visible. Full mailbox history remains available through the
 MSG CLI. UI sorting does not reorder the journal or change `/msg next` scheduling.
 No worker identity, presence, token/tool count or server unread state is inferred.
 

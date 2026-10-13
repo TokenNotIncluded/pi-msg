@@ -4,11 +4,12 @@ import { Type } from '@sinclair/typebox';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { type Config, Store, clean, label, compact, checkFile, atomicJSON } from '../src/core.js';
+import { type Config, Store, clean, label, compact, checkFile } from '../src/core.js';
 import { Subscription, send } from '../src/transport.js';
 import { Dashboard, InlineQueue } from '../src/dashboard.js';
 import { HandleLabels } from '../src/labels.js';
 import { candidates, candidateKey, candidateNotice } from '../src/candidates.js';
+import { Outbox, type ConversationDelivery } from '../src/conversation.js';
 
 const guidance = `MSG is the collaboration channel, not an agent launcher or authorization boundary.
 When collaboration is authorized, use distinct mailbox labels under the selected account. Put substantive work in one private discussion tree per task; mailbox notices route fixed id/revision references. Send brief task/progress/result notifications, reuse message IDs on retries, and read only needed fixed bodies. Never send keys or private runtime data to a public topic.
@@ -19,6 +20,9 @@ export default function piMsg(pi: ExtensionAPI): void {
   let ctx: ExtensionContext | undefined;
   let subscription: Subscription | undefined;
   let store: Store | undefined;
+  let outbox: Outbox | undefined;
+  const sends = new Set<Promise<unknown>>();
+  const conversations = (): ConversationDelivery[] => [...(store?.journal.deliveries ?? []), ...(outbox?.conversation() ?? [])];
   let timer: NodeJS.Timeout | undefined;
   let config: Config | undefined;
   let enabled = false;
@@ -32,11 +36,11 @@ export default function piMsg(pi: ExtensionAPI): void {
   const configPath = join(homedir(), '.config', 'pi-msg', 'config.json');
 
   function update(): void {
-    ctx?.ui.setStatus('pi-msg', subscription ? `MSG ${subscription.state} · ${store?.pending().length ?? 0} pending` : 'MSG off');
+    ctx?.ui.setStatus('pi-msg', subscription ? `MSG ${subscription.state} · ${store?.journal.deliveries.length ?? 0} received · ${outbox?.conversation().filter(d => d.transport !== 'sent').length ?? 0} send pending · ${store ? candidates(store.journal.deliveries).length : 0} task candidates` : 'MSG off');
     if (ctx?.mode === 'tui') {
       if (!subscription || !store) ctx.ui.setWidget('pi-msg-candidates', undefined);
       else ctx.ui.setWidget('pi-msg-candidates', (tui, theme) => ({
-        render: (width: number) => inlineQueue.render({ channel: store?.config.agent ?? '', deliveries: store?.journal.deliveries ?? [], listener: subscription?.state ?? 'off', error: subscription?.lastError, labels: handleLabels.entries, remote: store?.config.remote, theme }, width, tui.terminal.rows),
+        render: (width: number) => inlineQueue.render({ channel: store?.config.agent ?? '', deliveries: conversations(), listener: subscription?.state ?? 'off', error: subscription?.lastError, labels: handleLabels.entries, remote: store?.config.remote, theme }, width, tui.terminal.rows),
         invalidate: () => {},
       }), { placement: 'aboveEditor' });
     }
@@ -103,13 +107,16 @@ export default function piMsg(pi: ExtensionAPI): void {
   async function disconnect(): Promise<void> {
     if (timer) clearTimeout(timer); timer = undefined;
     const old = subscription; subscription = undefined;
-    await old?.stop(); store = undefined; announced.clear(); handleLabels.clear(); inlineQueue.reset(); update();
+    // Keep the subscription lock until all sends have persisted their outcome.
+    // A reconnect must not load an outbox snapshot an old send can overwrite.
+    await Promise.allSettled([...sends]);
+    await old?.stop(); store = undefined; outbox = undefined; announced.clear(); handleLabels.clear(); inlineQueue.reset(); update();
   }
   async function connect(): Promise<void> {
     await disconnect(); load();
     if (!config) throw new Error('Create private ~/.config/pi-msg/config.json; see README.');
     store = new Store(config); subscription = new Subscription(store, schedule, update);
-    try { await subscription.start(); } catch (e) { await disconnect(); throw e; }
+    try { await subscription.start(); outbox = new Outbox(store.config, store.directory); } catch (e) { await disconnect(); throw e; }
     schedule(); update();
   }
   function result(value: unknown) {
@@ -152,16 +159,16 @@ export default function piMsg(pi: ExtensionAPI): void {
     ctx = context;
     if (action === 'details') {
       if (detailsOpen) return;
-      const selected = inlineQueue.selected(active.journal.deliveries);
+      const selected = inlineQueue.selected(conversations());
       if (!selected) throw new Error('No selected delivery; use /msg history for saved deliveries.');
       detailsOpen = true;
       try {
         await context.ui.custom<void>((tui, theme, _keys, done) => {
           redrawDashboard = () => tui.requestRender();
-          return new Dashboard(() => ({ channel: active.config.agent, deliveries: active.journal.deliveries,
+          return new Dashboard(() => ({ channel: active.config.agent, deliveries: conversations(),
             listener: subscription?.state ?? 'stopped', error: subscription?.lastError, labels: handleLabels.entries, remote: active.config.remote, theme }),
             () => tui.requestRender(), () => done(undefined), () => Math.max(1, Math.min(10, Math.floor(tui.terminal.rows / 2))),
-            { id: selected.message.id, history: inlineQueue.history });
+            { id: selected.message.id, history: inlineQueue.history, outbound: selected.outbound });
         }, { overlay: true, overlayOptions: { anchor: 'bottom-center', width: 72, maxHeight: 10, margin: 1 } });
       } finally { redrawDashboard = undefined; detailsOpen = false; }
       return;
@@ -169,8 +176,8 @@ export default function piMsg(pi: ExtensionAPI): void {
     if (action === 'ui') inlineQueue.expanded = !inlineQueue.expanded;
     else if (action === 'ui expand') inlineQueue.expanded = true;
     else if (action === 'fold') inlineQueue.expanded = false;
-    else if (action === 'history') { inlineQueue.history = !inlineQueue.history; inlineQueue.expanded = true; }
-    else { inlineQueue.expanded = true; inlineQueue.move(active.journal.deliveries, action === 'up' ? -1 : 1); }
+    else if (['history', 'tasks', 'pending'].includes(action)) { inlineQueue.history = action !== 'tasks'; inlineQueue.transportOnly = action === 'pending'; inlineQueue.expanded = true; }
+    else { inlineQueue.expanded = true; inlineQueue.move(conversations(), action === 'up' ? -1 : 1); }
     update();
   }
   for (const [key, action, description] of [
@@ -182,7 +189,7 @@ export default function piMsg(pi: ExtensionAPI): void {
     try { await queueControl(action, context); } catch (e) { context.ui.notify(clean((e as Error).message), 'warning'); }
   } });
   pi.registerCommand('msg', {
-    description: 'MSG inline queue; ui [expand], fold, up/down, history, details, candidates, next [ID], defer/resume ID, label HANDLE TEXT, unlabel HANDLE, labels, connect/disconnect, status',
+    description: 'MSG conversation; ui [expand], fold, up/down, history, tasks, pending, details, candidates, next [ID], defer/resume ID, label HANDLE TEXT, unlabel HANDLE, labels, connect/disconnect, status',
     handler: async (args, context) => {
       ctx = context;
       try {
@@ -225,9 +232,9 @@ export default function piMsg(pi: ExtensionAPI): void {
           update(); return;
         }
         if (action === 'status') {
-          context.ui.notify(JSON.stringify({ state: subscription?.state ?? 'off', pending: store?.pending().length ?? 0, oldest: store?.pending()[0]?.receivedAt, lastDelivery: subscription?.lastDelivery, wakes: wakeCount, error: subscription?.lastError }), 'info'); return;
+          context.ui.notify(JSON.stringify({ state: subscription?.state ?? 'off', received: store?.journal.deliveries.length ?? 0, sendPending: outbox?.conversation().filter(d => d.transport !== 'sent').length ?? 0, taskCandidates: store ? candidates(store.journal.deliveries).length : 0, deliveryPending: store?.pending().length ?? 0, oldest: store?.pending()[0]?.receivedAt, lastDelivery: subscription?.lastDelivery, wakes: wakeCount, error: subscription?.lastError }), 'info'); return;
         }
-        if (!['ui', 'ui expand', 'fold', 'up', 'down', 'history', 'details'].includes(action)) throw new Error('Use /msg [ui [expand]|fold|up|down|history|details|connect|disconnect|status|candidates|next [ID]|defer ID|resume ID|label HANDLE TEXT|unlabel HANDLE|labels]');
+        if (!['ui', 'ui expand', 'fold', 'up', 'down', 'history', 'tasks', 'pending', 'details'].includes(action)) throw new Error('Use /msg [ui [expand]|fold|up|down|history|tasks|pending|details|connect|disconnect|status|candidates|next [ID]|defer ID|resume ID|label HANDLE TEXT|unlabel HANDLE|labels]');
         await queueControl(action, context);
       } catch (e) { context.ui.notify(clean((e as Error).message), 'warning'); }
     },
@@ -273,15 +280,20 @@ export default function piMsg(pi: ExtensionAPI): void {
       const s = requireStore();
       // Persist the outbox before sending; ambiguous transport failure retains
       // exact retry material rather than generating a replacement message ID.
-      const outbox = join(s.directory, 'outbox.json'); checkFile(outbox);
-      if (!/^[A-Za-z0-9_-]{1,64}$/.test(args.message_id)) throw new Error('Invalid MSG message ID');
-      const entries: Record<string, { to: string; body: string; saved?: boolean }> = Object.assign(Object.create(null), existsSync(outbox) ? JSON.parse(readFileSync(outbox, 'utf8')) : {});
-      const previous = entries[args.message_id];
-      if (previous && (previous.to !== args.to || previous.body !== args.body)) throw new Error('Outbox message ID conflict');
-      entries[args.message_id] = { to: args.to, body: args.body }; atomicJSON(outbox, entries);
-      const receipt = await send(s.config, s.directory, args.to, args.body, args.message_id);
-      entries[args.message_id] = { to: args.to, body: args.body, saved: true }; atomicJSON(outbox, entries);
-      return result(receipt);
+      if (!outbox) throw new Error('Outbox is unavailable; reconnect MSG.');
+      const activeOutbox = outbox;
+      const entry = activeOutbox.prepare(args.message_id, args.to, args.body);
+      if (entry.saved) return result(entry.receipt ?? { id: args.message_id, to: entry.to, status: 'saved' });
+      update();
+      const operation = (async () => {
+        try {
+          const receipt = await send(s.config, s.directory, args.to, args.body, args.message_id);
+          activeOutbox.finish(args.message_id, receipt); update();
+          return result(receipt);
+        } catch (e) { activeOutbox.finish(args.message_id); update(); throw e; }
+      })();
+      sends.add(operation);
+      try { return await operation; } finally { sends.delete(operation); }
     },
   });
 }

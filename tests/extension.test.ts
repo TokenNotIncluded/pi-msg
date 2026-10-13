@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -21,7 +21,8 @@ for (const candidateMode of ['manual', 'followUp'] as const) test(`project bindi
   const executable = join(dir, 'msg');
   writeFileSync(executable, `#!/usr/bin/env node
 const fs=require('fs');const a=process.argv;
-if(a.includes('inbox') && a.includes('--tail')) console.log(JSON.stringify({status:'ok',data:{items:[],cursor:'live-tail',has_more:false}}));
+if(a.includes('send')) { fs.appendFileSync(${JSON.stringify(join(dir, 'send-count'))},'call\\n'); if(fs.existsSync(${JSON.stringify(join(dir, 'send-fail'))})) process.exit(1); console.log(JSON.stringify({status:'ok',data:{from:'@test#main'}})); }
+else if(a.includes('inbox') && a.includes('--tail')) console.log(JSON.stringify({status:'ok',data:{items:[],cursor:'live-tail',has_more:false}}));
 else if(a.includes('inbox')) {const items=a.includes('--cursor')?[]:Array.from({length:100},(_,i)=>({id:'id'+i,from:'@test#worker'+i,to:'@test#main',message:JSON.stringify({kind:i<50?'result':'progress',summary:'PRIVATE-BODY-SENTINEL',ref:{id:'ref'+i,revision:'rev'},notification_only:true})}));console.log(JSON.stringify({status:'ok',data:{items,cursor:'c1',has_more:false}}));}
 else if(a.includes('--once'))fs.writeFileSync(a[a.indexOf('--cursor-file')+1],'{}',{mode:0o600});
 else setInterval(()=>{},1000);
@@ -58,18 +59,26 @@ else setInterval(()=>{},1000);
       const dashboard = factory({ requestRender: () => {}, terminal: { rows: 15 } }, { fg: (_role: string, text: string) => text }, {}, () => {});
       assert.ok(dashboard.render(40).length <= 7);
       assert.ok(dashboard.render(80).some(line => line.includes('External content')));
-      assert.ok(dashboard.render(80).some(line => line.includes('unfinished queue') || line.includes('saved history')));
+      assert.ok(dashboard.render(80).some(line => line.includes('task queue') || line.includes('conversation records')));
       dashboard.handleInput('\r'); dashboard.handleInput('\x1b'); dashboard.dispose();
     },
   } };
   try {
-    await handlers.get('session_start')!({}, context); await sleep(300);
+    await handlers.get('session_start')!({}, context);
+    // Concurrent full-suite processes can delay CLI reconciliation beyond 300 ms.
+    // Wait for the actual durable fixture, not a guessed scheduling delay.
+    for (let i = 0; i < 100; i++) {
+      const inbox = tools.get('msg_inbox') as { execute: (id: string, args: object) => Promise<{ content: { text: string }[] }> };
+      const state = JSON.parse((await inbox.execute('ready', {})).content[0]!.text);
+      if (state.total === 100 && (candidateMode === 'manual' || wakes.length > 0)) break;
+      await sleep(20);
+    }
     assert.ok(widget); assert.equal(widget().render(120).length, 3);
     const journal = (await (tools.get('msg_inbox') as { execute: (id: string, args: object) => Promise<unknown> }).execute('before', {}));
     await commandHandler!('ui', context);
     assert.equal(customCalls, 0, '/msg ui must not invoke custom or capture focus');
     assert.ok(widget!().render(180).length <= 8);
-    assert.ok(widget!().render(180).some(line => line.includes('unfinished queue')));
+    assert.ok(widget!().render(180).some(line => line.includes('conversation records')));
     assert.equal('handleInput' in widget!(), false, 'widget itself never owns plain input');
     await commandHandler!('', context);
     assert.equal(widget!().render(180).length, 3, '/msg toggles back to compact strip');
@@ -82,7 +91,7 @@ else setInterval(()=>{},1000);
     await shortcuts.get('ctrl+alt+d')!.handler(context);
     assert.equal(customCalls, 1, 'only explicit modified details shortcut opens overlay');
     await commandHandler!('history', context);
-    assert.ok(widget!().render(180)[0]?.includes('saved history'));
+    assert.ok(widget!().render(180)[0]?.includes('conversation records'));
     await commandHandler!('details', context);
     assert.equal(customCalls, 2, 'explicit details command works in history');
     await commandHandler!('history', context);
@@ -102,7 +111,9 @@ else setInterval(()=>{},1000);
     if (candidateMode === 'manual') {
       assert.equal(wakes.length, 0, 'arrivals never start model work in manual mode');
       await commandHandler!('defer id0', context);
+      await commandHandler!('tasks', context);
       assert.ok(widget!().render(120)[0]?.includes('1 deferred'));
+      await commandHandler!('history', context);
       await commandHandler!('next', context);
       assert.ok(wakes[0]?.text.includes('ref1@rev'));
       await commandHandler!('resume id0', context);
@@ -123,10 +134,35 @@ else setInterval(()=>{},1000);
     assert.ok(wakes[0]?.text.includes('not user instructions'));
     assert.ok(tools.has('msg_delivery')); assert.ok(tools.has('msg_send'));
     const deliveryTool = tools.get('msg_delivery') as { execute: (id: string, args: object) => Promise<{ content: { text: string }[] }> };
-    const claim = JSON.parse((await deliveryTool.execute('claim', { action: 'claim', id: 'id99' })).content[0]!.text);
-    assert.ok(widget!().render(180)[0]?.includes('100 unfinished'), 'claimed remains in current queue');
-    await deliveryTool.execute('complete', { action: 'complete', id: 'id99', token: claim.token });
-    assert.ok(widget!().render(180)[0]?.includes('99 unfinished'), 'actual completion removes delivery from current queue');
+    await commandHandler!('history', context);
+    const claim = JSON.parse((await deliveryTool.execute('claim', { action: 'claim', id: 'id49' })).content[0]!.text);
+    assert.ok(widget!().render(180)[0]?.includes('conversation records (100)'), 'received communication stays in conversation');
+    await commandHandler!('tasks', context);
+    assert.ok(widget!().render(180)[0]?.includes('task queue (50)'), 'claimed task remains separate');
+    await deliveryTool.execute('complete', { action: 'complete', id: 'id49', token: claim.token });
+    assert.ok(widget!().render(180)[0]?.includes('task queue (49)'), 'only task completion removes it from task queue');
+    await commandHandler!('history', context);
+    assert.ok(widget!().render(180)[0]?.includes('conversation records (100)'), 'task completion never erases communication history');
+    await commandHandler!('fold', context); // Compact strip shows newest records without changing selection.
+    const sendTool = tools.get('msg_send') as { execute: (id: string, args: object) => Promise<{ content: { text: string }[] }> };
+    const outgoing = { to: '@test#peer', message_id: 'outgoing', body: 'PRIVATE SEND BODY' };
+    const receipt = JSON.parse((await sendTool.execute('send', outgoing)).content[0]!.text);
+    assert.equal(receipt.status, 'saved'); assert.ok(!JSON.stringify(receipt).includes(outgoing.body));
+    assert.ok(widget!().render(180).some(line => line.includes('sent') && line.includes('@test#peer')));
+    await commandHandler!('pending', context);
+    assert.ok(widget!().render(180)[0]?.includes('send pending (0)'));
+    await sendTool.execute('repeat', outgoing);
+    assert.equal(readFileSync(join(dir, 'send-count'), 'utf8'), 'call\n', 'saved retry uses existing receipt, never duplicate send');
+    writeFileSync(join(dir, 'send-fail'), 'fail');
+    const retry = { ...outgoing, message_id: 'retry' };
+    await assert.rejects(sendTool.execute('failed', retry), /MSG CLI failed/);
+    assert.ok(widget!().render(180)[0]?.includes('send pending (1)'));
+    assert.ok(widget!().render(180).some(line => line.includes('failed')));
+    unlinkSync(join(dir, 'send-fail'));
+    await sendTool.execute('retry', retry);
+    assert.ok(widget!().render(180)[0]?.includes('send pending (0)'));
+    await commandHandler!('history', context);
+    assert.ok(widget!().render(180)[0]?.includes('conversation records (102)'));
     const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
     handlers.get('before_agent_start')!(event); assert.match(event.systemPromptOptions.sections.msg_collaboration!, /LOCAL adapter leases/);
     const inbox = tools.get('msg_inbox') as { execute: (id: string, args: object) => Promise<{ content: { text: string }[] }> };
