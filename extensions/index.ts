@@ -32,8 +32,8 @@ export default function piMsg(pi: ExtensionAPI): void {
     ctx?.ui.setStatus('pi-msg', subscription ? `MSG ${subscription.state} · ${store?.pending().length ?? 0} pending` : 'MSG off');
     if (ctx?.mode === 'tui') {
       if (!subscription || !store) ctx.ui.setWidget('pi-msg-candidates', undefined);
-      else ctx.ui.setWidget('pi-msg-candidates', () => ({
-        render: (width: number) => queueLines(store?.journal.deliveries ?? [], subscription?.state ?? 'off', width, handleLabels.entries),
+      else ctx.ui.setWidget('pi-msg-candidates', (_tui, theme) => ({
+        render: (width: number) => queueLines(store?.journal.deliveries ?? [], subscription?.state ?? 'off', width, handleLabels.entries, { remote: store?.config.remote, theme }),
         invalidate: () => {},
       }), { placement: 'aboveEditor' });
     }
@@ -171,10 +171,10 @@ export default function piMsg(pi: ExtensionAPI): void {
         if (context.mode !== 'tui' || !context.hasUI) throw new Error('Message queue needs interactive Pi; use msg_inbox in RPC/headless mode.');
         const active = requireStore();
         try {
-          await context.ui.custom<void>((tui, _theme, _keys, done) => {
+          await context.ui.custom<void>((tui, theme, _keys, done) => {
             redrawDashboard = () => tui.requestRender();
             return new Dashboard(() => ({ channel: active.config.agent, deliveries: active.journal.deliveries,
-              listener: subscription?.state ?? 'stopped', error: subscription?.lastError, labels: handleLabels.entries }),
+              listener: subscription?.state ?? 'stopped', error: subscription?.lastError, labels: handleLabels.entries, remote: active.config.remote, theme }),
               () => tui.requestRender(), () => done(undefined), () => Math.max(1, tui.terminal.rows - 4));
           }, { overlay: true, overlayOptions: { anchor: 'center', width: '90%', maxHeight: 18, margin: 2 } });
         } finally { redrawDashboard = undefined; }

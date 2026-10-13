@@ -106,6 +106,12 @@ independent identities or a sandbox.
 
 - `/msg` or `/msg ui`: compact overlay for the current subscription's unfinished message queue,
   newest first; sender on the left, summary in the middle, recipient on the right.
+  Both the persistent strip and queue show `[LOCAL]` or `[NET]` from the actual
+  subscription's `remote` configuration, with `[UNKNOWN]` when not known (never guessed
+  from names). Sender uses the active theme's `accent`, recipient its `success` color;
+  names and display labels are sanitized before styling. Direction and transport text
+  remain readable without color (`NO_COLOR` is respected), with ANSI-aware truncation
+  on narrow terminals. Very narrow widths may truncate names or the marker.
 - `/msg connect`: establish/resume a configured subscription.
 - `/msg disconnect`: abort listener, retries and lease timers; keep durable work.
 - `/msg status`: state, outstanding count, oldest arrival, last delivery and wakes.
