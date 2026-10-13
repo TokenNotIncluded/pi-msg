@@ -14,6 +14,8 @@ export interface Config {
   remote: boolean;
   mergeMs: number;
   maxPending: number;
+  /** External messages never gain user authority, even in automatic mode. */
+  candidateMode?: 'manual' | 'followUp';
 }
 export interface Message {
   id: string; from: string; to: string; message: string; created_at?: string;
@@ -27,6 +29,7 @@ export interface Metadata {
 export interface Delivery {
   message: Message; metadata: Metadata; state: 'pending' | 'claimed' | 'completed';
   attempts: number; receivedAt: string; leaseUntil?: number; token?: string; error?: string;
+  deferred?: boolean;
 }
 export interface Journal {
   version: 1; binding: string; cursor?: string; liveCursor?: string; historyComplete?: boolean; deliveries: Delivery[];
@@ -146,6 +149,13 @@ export class Store {
     d.state = success ? 'completed' : 'pending'; delete d.token; delete d.leaseUntil;
     d.error = success ? undefined : 'Handler reported failure; eligible for retry'; this.save();
   }
+  defer(id: string, deferred: boolean): void {
+    const d = this.journal.deliveries.find(d => d.message.id === id);
+    if (!d || d.state !== 'pending') throw new Error('Only pending deliveries can be deferred');
+    const previous = d.deferred;
+    d.deferred = deferred;
+    try { this.save(); } catch (e) { d.deferred = previous; throw e; }
+  }
   recover(): void {
     for (const d of this.journal.deliveries) if (d.state === 'claimed') { d.state = 'pending'; delete d.token; delete d.leaseUntil; }
     this.save();
@@ -167,7 +177,7 @@ export class Store {
 export function compact(deliveries: Delivery[], budget = 4096): { items: unknown[]; omitted: number } {
   const items: unknown[] = []; let bytes = 2;
   for (const d of deliveries) {
-    const item = { id: d.message.id, from: d.message.from, to: d.message.to, state: d.state, ...d.metadata, attempts: d.attempts };
+    const item = { id: d.message.id, from: d.message.from, to: d.message.to, state: d.state, deferred: d.deferred === true, ...d.metadata, attempts: d.attempts };
     const size = Buffer.byteLength(JSON.stringify(item)) + 1;
     if (bytes + size > budget) break;
     bytes += size; items.push(item);

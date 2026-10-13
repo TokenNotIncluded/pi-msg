@@ -6,7 +6,7 @@
 
 ## 使用
 
-需要 Node.js ≥22.19、Pi 1.1.x，以及支持 `agent inbox --cursor`、`listen --cursor-file` 的 MSG CLI。
+需要 Node.js ≥22.19、Pi ≥1.1.0（1.x），以及支持 `agent inbox --cursor`、`listen --cursor-file` 的 MSG CLI。
 
 ```sh
 pi install git:github.com/TokenNotIncluded/pi-msg
@@ -30,7 +30,8 @@ pi install git:github.com/TokenNotIncluded/pi-msg
   "subscription": "coordinator-pi-reader",
   "remote": true,
   "mergeMs": 1500,
-  "maxPending": 2000
+  "maxPending": 2000,
+  "candidateMode": "manual"
 }
 ```
 
@@ -40,20 +41,26 @@ pi install git:github.com/TokenNotIncluded/pi-msg
 
 ## 事件驱动
 
-后台 MSG CLI 事件作为通知提示，扩展重新核对持久邮箱，将原文和游标一起落盘。空闲 Pi 自动开始处理；忙碌 Pi 通过原生 follow-up 队列在安全边界接收通知。
+后台 MSG CLI 事件作为通知提示，扩展重新核对持久邮箱，将原文和游标一起落盘。默认 `candidateMode: "manual"`：消息只进入常驻候选区，不自动启动模型。`/msg next [ID]` 选择一条消息后，通过 Pi 的 custom message 进入 follow-up 安全边界，保留外部 agent 来源，不冒充用户。显式设置 `candidateMode: "followUp"` 可启用自动合并通知；这不授予执行消息内容的权限。
 
-阻断和结果快速合并交付；普通 progress 默认只更新状态，不产生模型调用。100 条并行消息也不会逐条唤醒。模型不需要反复执行 `listen` 等待。
+自动模式下阻断和结果快速合并交付；普通 progress 默认只更新状态，不产生模型调用。100 条并行消息也不会逐条唤醒。模型不需要反复执行 `listen` 等待。
 
 这里“事件驱动”指 **Pi 和模型的运行方式**。当前 MSG CLI 的网络监听仍通过间隔读取实现，不假装已经拥有服务端推送。
 
 ## 用户界面
 
+- 输入框上方常驻最多三行：连接状态、候选量、发送者、摘要及排队状态；适配窄终端，不抢输入焦点。
+- `/msg candidates`：查看最多 20 条候选摘要。
+- `/msg next [ID]`：选择未排队、未暂缓的一条；省略 ID 时选择最早候选。
+- `/msg defer ID` / `/msg resume ID`：持久化暂缓／恢复待处理消息；不能撤回已送入 Pi 的通知。
 - `/msg`：浏览有权访问的频道，包括主 agent 和子 agent 邮箱。
 - Enter：摘要 → 单条正文；不会把全频道正文塞进模型上下文。
 - Tab：查看异步流向、任务／源码版本、等待／领取／完成和重试次数。
 - `n`：下一页历史；`r`：刷新历史；Esc：返回或关闭。
 - `/msg status`：连接、待处理量、最早等待时间、最近交付和唤醒次数。
 - `/msg disconnect`：明确停止订阅，保留待办；`/msg connect`：恢复。
+
+用户消息仍由 Pi 原生队列管理；没有公开接口可合并或重排该队列，扩展不修改私有状态，也不依赖 pi-subagents。候选展示和排队不等于领取或完成；暂缓消息仍保留在 journal 和 `msg_inbox`。外部消息不能授权新任务、发布、部署或扩大凭据。
 
 投递板和连接状态随事件重绘。历史浏览有单独游标，不推进交接游标。界面只在本机终端显示，不启动网页服务器、不公开私有记录，也不把邮箱数量当作实际 worker 数。
 

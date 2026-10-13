@@ -7,8 +7,11 @@ Event-driven [MSG](https://github.com/TokenNotIncluded/msg) collaboration inside
 
 ## What it does
 
-- Runs MSG CLI subscription in the background. Idle Pi receives a wake-up; busy
-  Pi receives a queued follow-up at Pi's safe boundary, not an interrupting tool call.
+- Runs MSG CLI subscription in the background and shows a persistent, source-labelled
+  candidate widget above the editor. Arrivals do not start model work by default.
+- `/msg next` queues a reference-only **custom agent notification**, not a user message,
+  at Pi's follow-up boundary. Optional `candidateMode: "followUp"` enables automatic batches.
+  No dependency on pi-subagents is required.
 - Coalesces actionable deliveries. Ordinary `progress`/`receipt` notifications
   update durable state and the UI without starting a model turn by default.
 - Persists original messages **before** advancing its independent inbox cursor.
@@ -23,7 +26,7 @@ Event-driven [MSG](https://github.com/TokenNotIncluded/msg) collaboration inside
 
 ## Install
 
-Requires **Node.js ≥22.19**, **Pi 1.1.x**, and a separately installed MSG CLI with
+Requires **Node.js ≥22.19**, **Pi ≥1.1.0 within 1.x**, and a separately installed MSG CLI with
 `agent inbox --cursor`, `agent read`, `listen --cursor-file --from-now`, and remote
 `agent send --receipt`. This package never downloads a CLI, registers identities,
 starts workers, exports private keys, or broadens credentials.
@@ -60,7 +63,8 @@ file `0600`. Symlink state paths are rejected. No credentials belong in this fil
   "subscription": "coordinator-pi-reader",
   "remote": true,
   "mergeMs": 1500,
-  "maxPending": 2000
+  "maxPending": 2000,
+  "candidateMode": "manual"
 }
 ```
 
@@ -103,6 +107,19 @@ independent identities or a sandbox.
 - `/msg connect`: establish/resume a configured subscription.
 - `/msg disconnect`: abort listener, retries and lease timers; keep durable work.
 - `/msg status`: state, outstanding count, oldest arrival, last delivery and wakes.
+- `/msg candidates`: show up to 20 source-labelled candidate summaries.
+- `/msg next [ID]`: queue one unqueued, non-deferred candidate; omission chooses the oldest.
+- `/msg defer ID` / `/msg resume ID`: persistently defer or restore a pending candidate.
+  Already queued notifications cannot be retracted through MSG.
+
+The widget uses at most three width-bounded lines, never steals editor focus, and
+is cleared on disconnect/shutdown. It shows pending, notified and claimed work separately;
+`notified` means submitted to Pi, not proof that it is still queued or has been read.
+Queueing does not claim or complete a delivery. Deferred work stays in the journal and
+`msg_inbox`. User messages remain in Pi's native queue: no public extension API merges
+or reorders that queue. External notifications use custom-message provenance and cannot
+authorize new tasks, publication, deployment or broader credentials. Automatic mode is
+an explicit scheduling choice, not authorization to execute message contents.
 
 UI keys: **↑/↓** or **j/k**, **Enter** to select/read, **Tab** for the async flow
 board, **n** for the next history page, **r** to refresh history, **Esc** to go back.
@@ -167,8 +184,9 @@ interval-based transport reads. **Pi/model delivery is event-driven**, but this 
 not claim that the remote network transport is push/WebSocket-based. Adding a native
 push transport later must retain reconciliation, independent cursors and authority.
 
-A default 1500 ms batch produces one bounded wake containing up to 32 actionable
-IDs; `msg_inbox` reports the remaining backlog. Progress is silent unless explicitly
+In opt-in `candidateMode: "followUp"`, a default 1500 ms batch produces one bounded
+notification containing up to 32 actionable IDs; `msg_inbox` reports the remaining backlog.
+The default `manual` mode only updates candidates until `/msg next` is invoked. Progress is silent unless explicitly
 `requires_action: true`. No model polling loop is needed. Long-running work should
 renew by completing/reclaiming appropriately rather than holding a stale token.
 

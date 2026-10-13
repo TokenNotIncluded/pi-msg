@@ -8,7 +8,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import piMsg from '../extensions/index.js';
 import { Dashboard } from '../src/dashboard.js';
 
-test('project subscription overrides global fallback; 100 messages coalesce into one ref-only follow-up', async t => {
+for (const candidateMode of ['manual', 'followUp'] as const) test(`project binding and ${candidateMode} source-labelled candidates`, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-msg-extension-')); const previousHome = process.env.HOME; const previousState = process.env.XDG_STATE_HOME;
   process.env.HOME = dir; process.env.XDG_STATE_HOME = join(dir, 'state');
   t.after(() => { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; if (previousState === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = previousState; rmSync(dir, { recursive: true, force: true }); });
@@ -26,20 +26,48 @@ else if(a.includes('inbox')) {const items=a.includes('--cursor')?[]:Array.from({
 else if(a.includes('--once'))fs.writeFileSync(a[a.indexOf('--cursor-file')+1],'{}',{mode:0o600});
 else setInterval(()=>{},1000);
 `, { mode: 0o700 });
-  writeFileSync(join(dir, '.pi/msg.json'), JSON.stringify({ enabled: true, executable, configDir: join(dir, 'cli'), username: 'tester', remote: false, agent: 'main', subscription: 'reader', mergeMs: 100, maxPending: 200 }), { mode: 0o600 });
-  const handlers = new Map<string, (...args: unknown[]) => unknown>(); const tools = new Map<string, unknown>(); const wakes: { text: string; options: unknown }[] = [];
+  writeFileSync(join(dir, '.pi/msg.json'), JSON.stringify({ enabled: true, candidateMode, executable, configDir: join(dir, 'cli'), username: 'tester', remote: false, agent: 'main', subscription: 'reader', mergeMs: 100, maxPending: 200 }), { mode: 0o600 });
+  const handlers = new Map<string, (...args: unknown[]) => unknown>(); const tools = new Map<string, unknown>(); const wakes: { text: string; options: unknown; message: { customType: string; details: unknown } }[] = [];
+  let commandHandler: (args: string, ctx: unknown) => Promise<void>;
+  let widget: (() => { render(width: number): string[] }) | undefined;
+  const notifications: string[] = [];
   const pi = {
     on: (name: string, handler: unknown) => handlers.set(name, handler as (...args: unknown[]) => unknown),
     registerTool: (tool: { name: string }) => tools.set(tool.name, tool),
-    registerCommand: () => {},
-    sendUserMessage: (text: string, options: unknown) => wakes.push({ text, options }),
+    registerCommand: (_name: string, definition: { handler: typeof commandHandler }) => { commandHandler = definition.handler; },
+    sendUserMessage: () => { throw new Error('External notifications must not impersonate users'); },
+    sendMessage: (message: { content: string; customType: string; details: unknown }, options: unknown) => wakes.push({ text: message.content, message, options }),
   } as unknown as ExtensionAPI;
   piMsg(pi);
-  const context = { cwd: dir, hasUI: false, ui: { setStatus: () => {}, notify: () => {} } };
+  const context = { cwd: dir, mode: 'tui', hasUI: true, ui: {
+    setStatus: () => {}, notify: (text: string) => notifications.push(text),
+    setWidget: (_key: string, value: typeof widget) => { widget = value; },
+  } };
   try {
     await handlers.get('session_start')!({}, context); await sleep(300);
-    assert.equal(wakes.length, 1); assert.deepEqual(wakes[0]?.options, { deliverAs: 'followUp' });
-    assert.ok(!wakes[0]?.text.includes('PRIVATE-BODY-SENTINEL')); assert.ok(wakes[0]?.text.includes('ref0@rev'));
+    assert.ok(widget); assert.equal(widget().render(120).length, 3);
+    if (candidateMode === 'manual') {
+      assert.equal(wakes.length, 0, 'arrivals never start model work in manual mode');
+      await commandHandler!('defer id0', context);
+      assert.ok(widget!().render(120)[0]?.includes('1 deferred'));
+      await commandHandler!('next', context);
+      assert.ok(wakes[0]?.text.includes('ref1@rev'));
+      await commandHandler!('resume id0', context);
+      await commandHandler!('next id0', context);
+      assert.equal(wakes.length, 2);
+      await commandHandler!('defer id0', context);
+      assert.ok(notifications.at(-1)?.includes('Already queued'));
+      await commandHandler!('next id0', context);
+      assert.equal(wakes.length, 2, 'queued notifications are not duplicated');
+    } else {
+      assert.equal(wakes.length, 1);
+      assert.ok(wakes[0]?.text.includes('ref0@rev'));
+    }
+    assert.deepEqual(wakes[0]?.options, { triggerTurn: true, deliverAs: 'followUp' });
+    assert.equal(wakes[0]?.message.customType, 'msg-candidates');
+    assert.ok(!wakes[0]?.text.includes('PRIVATE-BODY-SENTINEL'));
+    assert.ok(wakes[0]?.text.includes('agent @test#worker'));
+    assert.ok(wakes[0]?.text.includes('not user instructions'));
     assert.ok(tools.has('msg_delivery')); assert.ok(tools.has('msg_send'));
     const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
     handlers.get('before_agent_start')!(event); assert.match(event.systemPromptOptions.sections.msg_collaboration!, /LOCAL adapter leases/);
